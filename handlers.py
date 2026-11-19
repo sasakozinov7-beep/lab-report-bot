@@ -1,7 +1,7 @@
 import os
 import shutil
 import logging
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 
 from aiogram import Router, F
 from aiogram.types import (
@@ -27,6 +27,7 @@ from database import (
 logger = logging.getLogger(__name__)
 router = Router()
 
+# Хранилище сессий пользователей в оперативной памяти
 user_sessions: Dict[int, Dict[str, Any]] = {}
 
 BASE_SESSIONS_DIR = os.path.join(os.path.dirname(__file__), "sessions")
@@ -39,8 +40,40 @@ def get_user_dir(user_id: int) -> str:
     return path
 
 
+# -------------------------------------------------------------
+# Функции чистого интерфейса (Auto-Clean)
+# -------------------------------------------------------------
+async def safe_delete_msg(bot, chat_id: int, message_id: int) -> None:
+    """Безопасное удаление одного сообщения."""
+    try:
+        await bot.delete_message(chat_id=chat_id, message_id=message_id)
+    except Exception:
+        pass
+
+
+def track_message(user_id: int, message_id: int) -> None:
+    """Добавление сообщения в стек для последующей очистки."""
+    if user_id not in user_sessions:
+        user_sessions[user_id] = {}
+    if "clean_stack" not in user_sessions[user_id]:
+        user_sessions[user_id]["clean_stack"] = []
+    user_sessions[user_id]["clean_stack"].append(message_id)
+
+
+async def clear_old_messages(bot, chat_id: int, user_id: int, keep_ids: Optional[List[int]] = None) -> None:
+    """Удаляет все предыдущие промежуточные сообщения бота и пользователя."""
+    if user_id not in user_sessions:
+        return
+    stack = user_sessions[user_id].get("clean_stack", [])
+    keep = set(keep_ids or [])
+    for mid in stack:
+        if mid not in keep:
+            await safe_delete_msg(bot, chat_id, mid)
+    user_sessions[user_id]["clean_stack"] = [mid for mid in stack if mid in keep]
+
+
 async def safe_edit(msg: Message, text: str, reply_markup: Optional[InlineKeyboardMarkup] = None) -> None:
-    """Безопасное редактирование сообщения с защитой от TelegramBadRequest."""
+    """Безопасное редактирование сообщения."""
     try:
         await msg.edit_text(text, reply_markup=reply_markup, parse_mode="Markdown")
     except Exception:
@@ -50,7 +83,10 @@ async def safe_edit(msg: Message, text: str, reply_markup: Optional[InlineKeyboa
             pass
 
 
-def get_options_keyboard(profile: Dict[str, Any]) -> InlineKeyboardMarkup:
+# -------------------------------------------------------------
+# Клавиатуры
+# -------------------------------------------------------------
+def get_options_keyboard(profile: Dict[str, Any], custom_text: str = "") -> InlineKeyboardMarkup:
     """Интерактивная клавиатура параметров отчета."""
     t_title = "✅ Вкл" if profile.get("include_title", 1) else "❌ Выкл"
     t_quest = "✅ Вкл" if profile.get("include_questions", 1) else "❌ Выкл"
@@ -58,6 +94,8 @@ def get_options_keyboard(profile: Dict[str, Any]) -> InlineKeyboardMarkup:
     t_chart = "✅ Вкл" if profile.get("include_charts", 1) else "❌ Выкл"
     t_anti = "✅ Вкл" if profile.get("antiplagiat_mode", 1) else "❌ Выкл"
     variant = profile.get("variant") or "Любой"
+
+    custom_label = f"✏️ Пожелания: {custom_text[:15]}..." if custom_text else "✏️ Особые пожелания текстом"
 
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
@@ -74,10 +112,10 @@ def get_options_keyboard(profile: Dict[str, Any]) -> InlineKeyboardMarkup:
                 InlineKeyboardButton(text=f"🎯 Вариант: {variant}", callback_data="set_variant")
             ],
             [
-                InlineKeyboardButton(text="🚀 Сгенерировать отчет", callback_data="start_generation")
+                InlineKeyboardButton(text=custom_label, callback_data="enter_custom_text")
             ],
             [
-                InlineKeyboardButton(text="✏️ Ввести особые пожелания текстом", callback_data="enter_custom_text")
+                InlineKeyboardButton(text="🚀 Сгенерировать отчет", callback_data="start_generation")
             ]
         ]
     )
@@ -102,18 +140,37 @@ def get_profile_keyboard(profile: Dict[str, Any]) -> InlineKeyboardMarkup:
                 InlineKeyboardButton(text="🎯 Вариант", callback_data="prof_variant")
             ],
             [
-                InlineKeyboardButton(text=f"🛡️ Режим Антиплагиат: {anti}", callback_data="toggle_anti_prof")
+                InlineKeyboardButton(text=f"🛡️ Антиплагиат: {anti}", callback_data="toggle_anti_prof")
             ],
             [
-                InlineKeyboardButton(text="🔄 Готово / Закрыть", callback_data="close_profile")
+                InlineKeyboardButton(text="🔄 Закрыть профиль", callback_data="close_profile")
             ]
         ]
     )
     return keyboard
 
 
+def get_cancel_keyboard(back_to: str = "profile") -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[[
+            InlineKeyboardButton(text="🔙 Отмена", callback_data=f"cancel_{back_to}")
+        ]]
+    )
+
+
+# -------------------------------------------------------------
+# Команды
+# -------------------------------------------------------------
 @router.message(CommandStart())
 async def cmd_start(message: Message):
+    user_id = message.from_user.id
+    chat_id = message.chat.id
+    bot = message.bot
+
+    # Удаляем входящую команду пользователя и предыдущие сообщения бота
+    await safe_delete_msg(bot, chat_id, message.message_id)
+    await clear_old_messages(bot, chat_id, user_id)
+
     welcome_text = (
         "👋 **Привет! Я бот для быстрой сборки академических отчетов по ГОСТу.**\n\n"
         "📄 **Как получить готовый отчет:**\n"
@@ -122,12 +179,19 @@ async def cmd_start(message: Message):
         "3. Забирай готовый документ в **DOCX** и **PDF** с решением, таблицами, формулами и графиками!\n\n"
         "⚙️ Введи /profile, чтобы один раз сохранить свои ФИО, группу и препода."
     )
-    await message.answer(welcome_text, parse_mode="Markdown")
+    sent = await message.answer(welcome_text, parse_mode="Markdown")
+    track_message(user_id, sent.message_id)
 
 
 @router.message(Command("profile"))
 async def cmd_profile(message: Message):
     user_id = message.from_user.id
+    chat_id = message.chat.id
+    bot = message.bot
+
+    await safe_delete_msg(bot, chat_id, message.message_id)
+    await clear_old_messages(bot, chat_id, user_id)
+
     prof = get_profile(user_id)
     anti_str = "ВКЛ (высокая оригинальность)" if prof.get("antiplagiat_mode", 1) else "ВЫКЛ"
 
@@ -143,16 +207,24 @@ async def cmd_profile(message: Message):
         "💡 *Эти данные автоматически подставляются в титульный лист.*\n"
         "Нажмите кнопку ниже, чтобы изменить нужное поле:"
     )
-    await message.answer(text, reply_markup=get_profile_keyboard(prof), parse_mode="Markdown")
+    sent = await message.answer(text, reply_markup=get_profile_keyboard(prof), parse_mode="Markdown")
+    track_message(user_id, sent.message_id)
 
 
 @router.message(Command("my_labs"))
 async def cmd_my_labs(message: Message):
     user_id = message.from_user.id
+    chat_id = message.chat.id
+    bot = message.bot
+
+    await safe_delete_msg(bot, chat_id, message.message_id)
+    await clear_old_messages(bot, chat_id, user_id)
+
     labs = get_user_labs(user_id, limit=8)
 
     if not labs:
-        await message.answer("📭 У вас пока нет сохраненных отчетов. Отправьте методичку для генерации первого!")
+        sent = await message.answer("📭 У вас пока нет сохраненных отчетов. Отправьте методичку для генерации первого!")
+        track_message(user_id, sent.message_id)
         return
 
     text = "📚 **История ваших последних отчетов:**\n\n"
@@ -165,7 +237,14 @@ async def cmd_my_labs(message: Message):
             InlineKeyboardButton(text=f"📥 Скачать #{idx}", callback_data=f"getlab_{lab.get('id')}")
         ])
 
-    await message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons), parse_mode="Markdown")
+    buttons.append([InlineKeyboardButton(text="🔄 Закрыть", callback_data="close_labs")])
+    sent = await message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons), parse_mode="Markdown")
+    track_message(user_id, sent.message_id)
+
+
+@router.callback_query(F.data == "close_labs")
+async def cb_close_labs(call: CallbackQuery):
+    await safe_delete_msg(call.bot, call.message.chat.id, call.message.message_id)
 
 
 @router.callback_query(F.data.startswith("getlab_"))
@@ -192,6 +271,12 @@ async def cb_download_lab(call: CallbackQuery):
 @router.message(Command("reset"))
 async def cmd_reset(message: Message):
     user_id = message.from_user.id
+    chat_id = message.chat.id
+    bot = message.bot
+
+    await safe_delete_msg(bot, chat_id, message.message_id)
+    await clear_old_messages(bot, chat_id, user_id)
+
     if user_id in user_sessions:
         del user_sessions[user_id]
     user_dir = get_user_dir(user_id)
@@ -200,7 +285,9 @@ async def cmd_reset(message: Message):
             shutil.rmtree(user_dir)
         except Exception:
             pass
-    await message.answer("🧹 **Сессия сброшена.** Отправьте новый файл или фото задания.")
+
+    sent = await message.answer("🧹 **Сессия сброшена.** Отправьте новый файл или фото задания.")
+    track_message(user_id, sent.message_id)
 
 
 # -------------------------------------------------------------
@@ -209,11 +296,17 @@ async def cmd_reset(message: Message):
 @router.message(F.photo)
 async def handle_photo(message: Message):
     user_id = message.from_user.id
+    chat_id = message.chat.id
+    bot = message.bot
+
+    await clear_old_messages(bot, chat_id, user_id)
+
     photo = message.photo[-1]
     user_dir = get_user_dir(user_id)
     local_photo_path = os.path.join(user_dir, f"task_photo_{photo.file_id}.jpg")
 
-    status_msg = await message.answer("📸 Получено фото задания! Распознаю текст нейросетью...")
+    status_msg = await message.answer("📸 Распознаю текст и задание на фото...")
+    track_message(user_id, status_msg.message_id)
 
     try:
         await message.bot.download(photo, destination=local_photo_path)
@@ -228,7 +321,9 @@ async def handle_photo(message: Message):
             "session_dir": user_dir,
             "last_code": "",
             "last_docx": "",
-            "waiting_input": None
+            "waiting_input": None,
+            "card_msg_id": status_msg.message_id,
+            "clean_stack": [status_msg.message_id]
         }
 
         prof = get_profile(user_id)
@@ -236,13 +331,13 @@ async def handle_photo(message: Message):
         if caption.strip():
             user_sessions[user_id]["custom_instructions"] = caption
 
-        preview_text = extracted_text[:350] + ("..." if len(extracted_text) > 350 else "")
+        preview_text = extracted_text[:300] + ("..." if len(extracted_text) > 300 else "")
         await safe_edit(
             status_msg,
             f"✅ **Задание распознано!**\n\n"
             f"📖 *Фрагмент:*\n_{preview_text}_\n\n"
             f"Нажмите **«Сгенерировать отчет»** для запуска:",
-            reply_markup=get_options_keyboard(prof)
+            reply_markup=get_options_keyboard(prof, user_sessions[user_id].get("custom_instructions", ""))
         )
     except Exception as e:
         logger.exception("Ошибка при обработке фото")
@@ -255,19 +350,26 @@ async def handle_photo(message: Message):
 @router.message(F.document)
 async def handle_document(message: Message):
     user_id = message.from_user.id
+    chat_id = message.chat.id
+    bot = message.bot
+
+    await clear_old_messages(bot, chat_id, user_id)
+
     doc = message.document
     filename = doc.file_name or "uploaded_file"
     ext = os.path.splitext(filename)[1].lower()
 
     allowed = [".pdf", ".docx", ".txt", ".md", ".jpg", ".jpeg", ".png", ".webp"]
     if ext not in allowed:
-        await message.answer("⚠️ Поддерживаются форматы `.pdf`, `.docx`, `.txt`, `.md`, а также фото (`.jpg`, `.png`).")
+        sent = await message.answer("⚠️ Поддерживаются форматы `.pdf`, `.docx`, `.txt`, `.md`, а также фото (`.jpg`, `.png`).")
+        track_message(user_id, sent.message_id)
         return
 
     user_dir = get_user_dir(user_id)
     local_file_path = os.path.join(user_dir, filename)
 
     status_msg = await message.answer(f"📥 Читаю `{filename}`...")
+    track_message(user_id, status_msg.message_id)
 
     try:
         await message.bot.download(doc, destination=local_file_path)
@@ -282,7 +384,9 @@ async def handle_document(message: Message):
             "session_dir": user_dir,
             "last_code": "",
             "last_docx": "",
-            "waiting_input": None
+            "waiting_input": None,
+            "card_msg_id": status_msg.message_id,
+            "clean_stack": [status_msg.message_id]
         }
 
         prof = get_profile(user_id)
@@ -290,13 +394,13 @@ async def handle_document(message: Message):
         if caption.strip():
             user_sessions[user_id]["custom_instructions"] = caption
 
-        preview_text = extracted_text[:350] + ("..." if len(extracted_text) > 350 else "")
+        preview_text = extracted_text[:300] + ("..." if len(extracted_text) > 300 else "")
         await safe_edit(
             status_msg,
             f"✅ **Методичка `{filename}` прочитана!**\n\n"
             f"📖 *Фрагмент задания:*\n_{preview_text}_\n\n"
             f"Нажмите **«Сгенерировать отчет»** для запуска:",
-            reply_markup=get_options_keyboard(prof)
+            reply_markup=get_options_keyboard(prof, user_sessions[user_id].get("custom_instructions", ""))
         )
     except Exception as e:
         logger.exception("Ошибка при обработке документа")
@@ -330,7 +434,8 @@ async def cb_toggle_options(call: CallbackQuery):
         if call.data == "toggle_anti_prof":
             await call.message.edit_reply_markup(reply_markup=get_profile_keyboard(updated_prof))
         else:
-            await call.message.edit_reply_markup(reply_markup=get_options_keyboard(updated_prof))
+            custom = user_sessions.get(user_id, {}).get("custom_instructions", "")
+            await call.message.edit_reply_markup(reply_markup=get_options_keyboard(updated_prof, custom))
     except Exception:
         pass
 
@@ -341,8 +446,11 @@ async def cb_set_variant(call: CallbackQuery):
     if user_id not in user_sessions:
         user_sessions[user_id] = {}
     user_sessions[user_id]["waiting_input"] = "variant"
+    user_sessions[user_id]["active_card_msg"] = call.message
+
     await call.answer()
-    await call.message.answer("🎯 **Напишите номер вашего варианта** (например: `7` или `14`):")
+    back_to = "options" if call.data == "set_variant" else "profile"
+    await safe_edit(call.message, "🎯 **Напишите номер вашего варианта** (например: `7` или `14`):", reply_markup=get_cancel_keyboard(back_to))
 
 
 @router.callback_query(F.data.startswith("prof_"))
@@ -352,7 +460,7 @@ async def cb_edit_profile_field(call: CallbackQuery):
     field_names = {
         "full_name": "ваше ФИО (например: *Иванов Иван Иванович*)",
         "group_name": "номер учебной группы (например: *ИВТ-41*)",
-        "university": "название ВУЗа или кафедры (например: *РТУ МИРЭА, каф. КИС*)",
+        "university": "название ВУЗа или кафедры (например: *РТУ МИРЭА*)",
         "teacher": "ФИО преподавателя (например: *доц. Дьячкова О.В.*)",
         "discipline": "название дисциплины (например: *Проектирование и дизайн ИС*)",
     }
@@ -360,17 +468,49 @@ async def cb_edit_profile_field(call: CallbackQuery):
         if user_id not in user_sessions:
             user_sessions[user_id] = {}
         user_sessions[user_id]["waiting_input"] = field
+        user_sessions[user_id]["active_card_msg"] = call.message
+
         await call.answer()
-        await call.message.answer(f"✏️ **Введите {field_names[field]}:**")
+        await safe_edit(
+            call.message, 
+            f"✏️ **Введите {field_names[field]}:**",
+            reply_markup=get_cancel_keyboard("profile")
+        )
+
+
+@router.callback_query(F.data.startswith("cancel_"))
+async def cb_cancel_input(call: CallbackQuery):
+    user_id = call.from_user.id
+    back_to = call.data.replace("cancel_", "")
+    if user_id in user_sessions:
+        user_sessions[user_id]["waiting_input"] = None
+
+    prof = get_profile(user_id)
+    await call.answer("Отменено")
+
+    if back_to == "profile":
+        anti_str = "ВКЛ (высокая оригинальность)" if prof.get("antiplagiat_mode", 1) else "ВЫКЛ"
+        text = (
+            "👤 **Ваш студенческий профиль:**\n\n"
+            f"• **ФИО студента:** {prof.get('full_name') or '*(не указано)*'}\n"
+            f"• **Группа:** {prof.get('group_name') or '*(не указано)*'}\n"
+            f"• **ВУЗ / Кафедра:** {prof.get('university') or '*(не указано)*'}\n"
+            f"• **Преподаватель:** {prof.get('teacher') or '*(не указано)*'}\n"
+            f"• **Дисциплина:** {prof.get('discipline') or '*(не указано)*'}\n"
+            f"• **Вариант по умолчанию:** {prof.get('variant') or '*(любой)*'}\n"
+            f"• **Режим Антиплагиат:** {anti_str}\n\n"
+            "Нажмите кнопку ниже, чтобы изменить нужное поле:"
+        )
+        await safe_edit(call.message, text, reply_markup=get_profile_keyboard(prof))
+    else:
+        custom = user_sessions.get(user_id, {}).get("custom_instructions", "")
+        await safe_edit(call.message, "✅ **Параметры работы:**\nНажмите **«Сгенерировать отчет»** для запуска:", reply_markup=get_options_keyboard(prof, custom))
 
 
 @router.callback_query(F.data == "close_profile")
 async def cb_close_profile(call: CallbackQuery):
     await call.answer("Профиль сохранен!")
-    try:
-        await call.message.delete()
-    except Exception:
-        pass
+    await safe_delete_msg(call.bot, call.message.chat.id, call.message.message_id)
 
 
 @router.callback_query(F.data == "enter_custom_text")
@@ -379,8 +519,14 @@ async def cb_enter_custom(call: CallbackQuery):
     if user_id not in user_sessions:
         user_sessions[user_id] = {}
     user_sessions[user_id]["waiting_input"] = "custom_instructions"
+    user_sessions[user_id]["active_card_msg"] = call.message
+
     await call.answer()
-    await call.message.answer("✍️ **Напишите ваши индивидуальные пожелания к отчету:**")
+    await safe_edit(
+        call.message, 
+        "✍️ **Напишите ваши индивидуальные пожелания к отчету:**",
+        reply_markup=get_cancel_keyboard("options")
+    )
 
 
 @router.callback_query(F.data == "start_generation")
@@ -391,7 +537,8 @@ async def cb_start_generation(call: CallbackQuery):
         return
 
     await call.answer("Генерация запущена!")
-    status_msg = await call.message.answer("⚡ **Шаг 1/2:** Нейросеть решает задачи и пишет код сборки документа...")
+    status_msg = call.message
+    await safe_edit(status_msg, "⚡ **Шаг 1/2:** Нейросеть решает задачи и формирует структуру работы...")
     custom = user_sessions[user_id].get("custom_instructions", "")
     await process_generation(call.message, status_msg, user_id, custom)
 
@@ -402,25 +549,51 @@ async def cb_start_generation(call: CallbackQuery):
 @router.message(F.text)
 async def handle_text_message(message: Message):
     user_id = message.from_user.id
+    chat_id = message.chat.id
+    bot = message.bot
     user_text = message.text.strip()
 
-    # Проверка: ожидается ли ввод поля профиля
+    # Всегда удаляем входящее текстовое сообщение пользователя для чистоты чата
+    await safe_delete_msg(bot, chat_id, message.message_id)
+
+    # Проверка: ожидается ли ввод поля профиля или пожеланий
     if user_id in user_sessions and user_sessions[user_id].get("waiting_input"):
         field = user_sessions[user_id]["waiting_input"]
         user_sessions[user_id]["waiting_input"] = None
+        card_msg = user_sessions[user_id].get("active_card_msg")
 
         if field == "custom_instructions":
             user_sessions[user_id]["custom_instructions"] = user_text
-            await message.answer(f"✅ Пожелания сохранены: *«{user_text}»*.\nТеперь нажмите кнопку **«Сгенерировать отчет»** выше.")
+            prof = get_profile(user_id)
+            if card_msg:
+                await safe_edit(
+                    card_msg, 
+                    f"✅ **Пожелания сохранены:** _{user_text}_\n\nНажмите **«Сгенерировать отчет»** для запуска:",
+                    reply_markup=get_options_keyboard(prof, user_text)
+                )
             return
         elif field in ["full_name", "group_name", "university", "teacher", "discipline", "variant"]:
             update_profile(user_id, **{field: user_text})
             prof = get_profile(user_id)
-            await message.answer(f"✅ Поле обновлено на: **{user_text}**!", reply_markup=get_profile_keyboard(prof))
+            anti_str = "ВКЛ (высокая оригинальность)" if prof.get("antiplagiat_mode", 1) else "ВЫКЛ"
+            text = (
+                "👤 **Ваш студенческий профиль:**\n\n"
+                f"• **ФИО студента:** {prof.get('full_name') or '*(не указано)*'}\n"
+                f"• **Группа:** {prof.get('group_name') or '*(не указано)*'}\n"
+                f"• **ВУЗ / Кафедра:** {prof.get('university') or '*(не указано)*'}\n"
+                f"• **Преподаватель:** {prof.get('teacher') or '*(не указано)*'}\n"
+                f"• **Дисциплина:** {prof.get('discipline') or '*(не указано)*'}\n"
+                f"• **Вариант по умолчанию:** {prof.get('variant') or '*(любой)*'}\n"
+                f"• **Режим Антиплагиат:** {anti_str}\n\n"
+                "Нажмите кнопку ниже, чтобы изменить нужное поле:"
+            )
+            if card_msg:
+                await safe_edit(card_msg, text, reply_markup=get_profile_keyboard(prof))
             return
 
     if user_id not in user_sessions or not user_sessions[user_id].get("lab_text"):
-        await message.answer("ℹ️ Отправьте файл методички (`.pdf`, `.docx`) или фото задания для начала работы.")
+        sent = await message.answer("ℹ️ Отправьте файл методички (`.pdf`, `.docx`) или фото задания для начала работы.")
+        track_message(user_id, sent.message_id)
         return
 
     session = user_sessions[user_id]
@@ -429,9 +602,11 @@ async def handle_text_message(message: Message):
     if not has_previous_code:
         session["custom_instructions"] = user_text
         status_msg = await message.answer("⚡ **Шаг 1/2:** Нейросеть решает задачи и формирует структуру работы...")
+        track_message(user_id, status_msg.message_id)
         await process_generation(message, status_msg, user_id, user_text)
     else:
         status_msg = await message.answer("🔄 **Вношу правки в отчет...**")
+        track_message(user_id, status_msg.message_id)
         await process_edit(message, status_msg, user_id, user_text)
 
 
@@ -520,6 +695,7 @@ async def send_completed_file(
     chart_paths: Optional[list] = None,
     is_update: bool = False
 ):
+    # Удаляем служебное статусное сообщение, чтобы не засорять чат
     try:
         await status_msg.delete()
     except Exception:
@@ -542,7 +718,7 @@ async def send_completed_file(
         f"✅ **Ваш отчет успешно {action_word}!**\n\n"
         "📎 **Формат:** Microsoft Word (`.docx`)\n"
         "📐 **Оформление:** ГОСТ (поля 30/15/20/20, Times New Roman, таблицы, формулы OMML)\n\n"
-        "💬 **Нужны правки?** Просто напишите их в ответ (например: *«исправь формулу 2»*, *«убери лишний текст»*)."
+        "💬 **Нужны правки?** Напишите замечания в чат (например: *«исправь формулу 2»*, *«убери лишнюю теорию»*)."
     )
     await message.answer_document(
         document=FSInputFile(docx_path, filename="Laboratornaya_Rabota.docx"),
