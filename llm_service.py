@@ -1,10 +1,14 @@
 import re
+import os
 import logging
-from typing import Optional
+from typing import Optional, Dict, Any
+import PIL.Image
+
 from config import config
 from prompts import SYSTEM_PROMPT_GENERATOR, SYSTEM_PROMPT_EDITOR, SYSTEM_PROMPT_FIXER
 
 logger = logging.getLogger(__name__)
+
 
 class LLMService:
     def __init__(self):
@@ -40,6 +44,27 @@ class LLMService:
             )
             return response.choices[0].message.content or ""
 
+    async def extract_text_from_image(self, image_path: str) -> str:
+        """Распознавание текста и заданий на фотографии методички через Multimodal Vision."""
+        try:
+            logger.info(f"Распознавание текста на изображении: {image_path}")
+            img = PIL.Image.open(image_path)
+            prompt = (
+                "Ты профессиональный академический ассистент. "
+                "Внимательно прочитай и извлеки весь текст задания, формулы, таблицы, условия и вопросы "
+                "с этой фотографии методички или задания лабораторной работы. "
+                "Верни структурированный и полный текст задания на русском языке без пропусков."
+            )
+            if self.provider == "gemini":
+                resp = await self.gemini_model.generate_content_async([img, prompt])
+                return resp.text.strip()
+            else:
+                # Резервный вызов для OpenAI vision если используется openai
+                return "Изображение получено, но распознавание настроено для Gemini."
+        except Exception as e:
+            logger.exception("Ошибка при распознавании изображения")
+            return f"Ошибка распознавания фото: {e}"
+
     def _extract_code(self, raw_response: str) -> str:
         """Извлекает чистый Python код из markdown-блока ```python ... ```."""
         pattern = r"```(?:python)?(.*?)```"
@@ -48,12 +73,39 @@ class LLMService:
             return matches[0].strip()
         return raw_response.strip()
 
-    async def generate_initial_code(self, lab_text: str, user_instructions: str) -> str:
-        """Генерация первичного скрипта по тексту методички и пожеланиям."""
+    async def generate_initial_code(
+        self, 
+        lab_text: str, 
+        user_instructions: str,
+        profile: Optional[Dict[str, Any]] = None
+    ) -> str:
+        """Генерация первичного скрипта с учетом профиля студента, варианта и антиплагиата."""
+        profile_details = ""
+        if profile:
+            items = []
+            if profile.get("full_name"):
+                items.append(f"• ФИО Студента: {profile['full_name']}")
+            if profile.get("group_name"):
+                items.append(f"• Группа: {profile['group_name']}")
+            if profile.get("university"):
+                items.append(f"• ВУЗ / Кафедра: {profile['university']}")
+            if profile.get("teacher"):
+                items.append(f"• Преподаватель: {profile['teacher']}")
+            if profile.get("discipline"):
+                items.append(f"• Дисциплина: {profile['discipline']}")
+            if profile.get("variant"):
+                items.append(f"• ВАРИАНТ ЗАДАНИЯ: Выполни строго для варианта №{profile['variant']}")
+            if profile.get("antiplagiat_mode"):
+                items.append("• РЕЖИМ АНТИПЛАГИАТ: Пиши введение, ход работы и выводы уникальным авторским языком, избегая шаблонных фраз, чтобы отчет легко проходил проверку на оригинальность 80%+.")
+            
+            if items:
+                profile_details = "СОХРАНЕННЫЙ ПРОФИЛЬ И ПАРАМЕТРЫ СТУДЕНТА:\n" + "\n".join(items) + "\n\n"
+
         user_prompt = (
+            f"{profile_details}"
             f"МЕТОДИЧЕСКИЕ УКАЗАНИЯ / ТЕКСТ ЛАБОРАТОРНОЙ РАБОТЫ:\n"
             f"{lab_text}\n\n"
-            f"ПОЖЕЛАНИЯ И ДОПОЛНИТЕЛЬНЫЕ ТРЕБОВАНИЯ СТУДЕНТА:\n"
+            f"ДОПОЛНИТЕЛЬНЫЕ ПОЖЕЛАНИЯ СТУДЕНТА:\n"
             f"{user_instructions or 'Сделай качественный типовой отчет по ГОСТ с титульным листом, диаграммой, таблицами и ответами на контрольные вопросы в самом конце.'}\n\n"
             f"Напиши полный Python-код скрипта генерации result.docx."
         )
@@ -86,5 +138,6 @@ class LLMService:
         logger.info("Отправка запроса на авто-исправление кода в LLM...")
         raw_resp = await self._call_llm(SYSTEM_PROMPT_FIXER, user_prompt)
         return self._extract_code(raw_resp)
+
 
 llm_service = LLMService()

@@ -1,23 +1,30 @@
 import os
+import asyncio
 from pypdf import PdfReader
 import docx
 
-def extract_text_from_file(file_path: str, max_chars: int = 80000) -> str:
-    """Извлекает текст из файлов PDF, DOCX, MD или TXT."""
+def is_image_file(file_path: str) -> bool:
+    ext = os.path.splitext(file_path)[1].lower()
+    return ext in [".jpg", ".jpeg", ".png", ".webp", ".bmp"]
+
+async def extract_text_from_file(file_path: str, max_chars: int = 80000) -> str:
+    """Извлекает текст из файлов PDF, DOCX, MD, TXT или изображений (JPG, PNG, WEBP)."""
     ext = os.path.splitext(file_path)[1].lower()
 
-    if ext == ".pdf":
+    if is_image_file(file_path):
+        from llm_service import llm_service
+        return await llm_service.extract_text_from_image(file_path)
+    elif ext == ".pdf":
         return _extract_from_pdf(file_path, max_chars)
     elif ext == ".docx":
         return _extract_from_docx(file_path, max_chars)
     elif ext in [".txt", ".md"]:
         return _extract_from_text(file_path, max_chars)
     else:
-        # Попытка прочитать как текст
         try:
             return _extract_from_text(file_path, max_chars)
-        except Exception as e:
-            raise ValueError(f"Неподдерживаемый формат файла: {ext}. Поддерживаются .pdf, .docx, .md, .txt")
+        except Exception:
+            raise ValueError(f"Неподдерживаемый формат файла: {ext}. Поддерживаются .pdf, .docx, .md, .txt и фото (.jpg, .png)")
 
 def _extract_from_pdf(file_path: str, max_chars: int) -> str:
     reader = PdfReader(file_path)

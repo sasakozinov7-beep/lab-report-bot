@@ -5,6 +5,7 @@ import sys
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
+from aiogram.types import BotCommand
 
 from config import config
 from handlers import router
@@ -51,6 +52,18 @@ async def main():
         default=DefaultBotProperties(parse_mode=ParseMode.MARKDOWN)
     )
     dp = Dispatcher()
+
+    # Регистрация команд в меню Telegram
+    commands = [
+        BotCommand(command="start", description="Главное меню и инструкция"),
+        BotCommand(command="profile", description="Профиль (ФИО, группа, препод)"),
+        BotCommand(command="my_labs", description="История готовых отчетов"),
+        BotCommand(command="reset", description="Сбросить текущую работу")
+    ]
+    try:
+        await bot.set_my_commands(commands)
+    except Exception as e:
+        logger.warning(f"Не удалось установить команды: {e}")
 
     # Регистрация обработчиков
     dp.include_router(router)
