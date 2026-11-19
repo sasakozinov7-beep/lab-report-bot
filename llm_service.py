@@ -1,7 +1,7 @@
 import re
 import os
 import logging
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 import PIL.Image
 
 from config import config
@@ -48,11 +48,54 @@ class LLMService:
             )
             return response.choices[0].message.content or ""
 
+    async def extract_text_from_images(self, image_paths: List[str]) -> str:
+        """Распознавание текста и заданий на нескольких изображениях или сканах (например, из DOCX/PDF)."""
+        if not image_paths:
+            return ""
+        if len(image_paths) == 1:
+            return await self.extract_text_from_image(image_paths[0])
+            
+        try:
+            logger.info(f"Распознавание группы из {len(image_paths)} изображений через Gemini Vision...")
+            parts = []
+            for path in image_paths[:8]:
+                try:
+                    img = PIL.Image.open(path)
+                    if img.mode not in ("RGB", "L"):
+                        img = img.convert("RGB")
+                    if max(img.size) > 1600:
+                        img.thumbnail((1600, 1600), PIL.Image.Resampling.LANCZOS)
+                    parts.append(img)
+                except Exception as img_err:
+                    logger.warning(f"Ошибка открытия изображения {path}: {img_err}")
+
+            if not parts:
+                return ""
+
+            prompt = (
+                "Ты профессиональный академический ассистент. "
+                "Перед тобой страницы методички / задания к лабораторной работе (скриншоты или фотографии страниц из документа). "
+                "Внимательно прочитай и извлеки полный текст всех заданий, числовые данные, варианты, таблицы, формулы и вопросы со всех страниц. "
+                "Верни единый структурированный текст задания на русском языке без пропусков."
+            )
+            parts.append(prompt)
+
+            if self.provider == "gemini":
+                resp = await self.gemini_model.generate_content_async(parts)
+                return resp.text.strip()
+            else:
+                return "Изображения получены, но распознавание настроено для Gemini."
+        except Exception as e:
+            logger.exception("Ошибка при распознавании группы изображений")
+            return f"Ошибка распознавания фото: {e}"
+
     async def extract_text_from_image(self, image_path: str) -> str:
         """Распознавание текста и заданий на фотографии методички через Multimodal Vision."""
         try:
             logger.info(f"Распознавание текста на изображении: {image_path}")
             img = PIL.Image.open(image_path)
+            if img.mode not in ("RGB", "L"):
+                img = img.convert("RGB")
             # Быстрое сжатие огромных мобильных фото до оптимального разрешения для мгновенной передачи
             if max(img.size) > 1600:
                 img.thumbnail((1600, 1600), PIL.Image.Resampling.LANCZOS)
