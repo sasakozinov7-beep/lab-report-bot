@@ -150,6 +150,9 @@ def get_profile_keyboard(profile: Dict[str, Any]) -> InlineKeyboardMarkup:
                 InlineKeyboardButton(text="🎯 Вариант", callback_data="prof_variant")
             ],
             [
+                InlineKeyboardButton(text="📋 Постоянный титульник (МТИ)", callback_data="prof_title_template")
+            ],
+            [
                 InlineKeyboardButton(text=f"🛡️ Антиплагиат: {anti}", callback_data="toggle_anti_prof")
             ],
             [
@@ -203,15 +206,17 @@ async def cmd_profile(message: Message):
 
     prof = get_profile(user_id)
     anti_str = "ВКЛ (высокая оригинальность)" if prof.get("antiplagiat_mode", 1) else "ВЫКЛ"
+    title_status = "МТИ (зафиксирован)" if "МОСКОВСКИЙ ТЕХНОЛОГИЧЕСКИЙ" in prof.get("custom_title_template", "") else "Свой шаблон"
 
     text = (
         "👤 **Ваш студенческий профиль:**\n\n"
         f"• **ФИО студента:** {prof.get('full_name') or '*(не указано)*'}\n"
         f"• **Группа:** {prof.get('group_name') or '*(не указано)*'}\n"
-        f"• **ВУЗ / Кафедра:** {prof.get('university') or '*(не указано)*'}\n"
+        f"• **ВУЗ / Организация:** {prof.get('university') or '*(не указано)*'}\n"
         f"• **Преподаватель:** {prof.get('teacher') or '*(не указано)*'}\n"
         f"• **Дисциплина:** {prof.get('discipline') or '*(не указано)*'}\n"
         f"• **Вариант по умолчанию:** {prof.get('variant') or '*(любой)*'}\n"
+        f"• **Шаблон титульника:** {title_status}\n"
         f"• **Режим Антиплагиат:** {anti_str}\n\n"
         "💡 *Эти данные автоматически подставляются в титульный лист.*\n"
         "Нажмите кнопку ниже, чтобы изменить нужное поле:"
@@ -391,6 +396,44 @@ async def handle_photo(message: Message):
     user_dir = get_user_dir(user_id)
     local_photo_path = os.path.join(user_dir, f"photo_{photo.file_id}.jpg")
 
+    if waiting_input == "custom_title_template":
+        status_msg = await message.answer("📸 Считываю постоянный шаблон титульника...")
+        track_message(user_id, status_msg.message_id)
+        try:
+            await message.bot.download(photo, destination=local_photo_path)
+            sample_text = await llm_service.extract_sample_title_page(local_photo_path)
+            if not sample_text.strip():
+                await safe_edit(status_msg, "❌ Не удалось распознать текст шаблона на фото.")
+                return
+            update_profile(user_id, custom_title_template=sample_text.strip())
+            session["waiting_input"] = None
+            updated_prof = get_profile(user_id)
+            anti_str = "ВКЛ (высокая оригинальность)" if updated_prof.get("antiplagiat_mode", 1) else "ВЫКЛ"
+            text = (
+                "👤 **Ваш студенческий профиль:**\n\n"
+                f"• **ФИО студента:** {updated_prof.get('full_name') or '*(не указано)*'}\n"
+                f"• **Группа:** {updated_prof.get('group_name') or '*(не указано)*'}\n"
+                f"• **ВУЗ / Организация:** {updated_prof.get('university') or '*(не указано)*'}\n"
+                f"• **Преподаватель:** {updated_prof.get('teacher') or '*(не указано)*'}\n"
+                f"• **Дисциплина:** {updated_prof.get('discipline') or '*(не указано)*'}\n"
+                f"• **Вариант по умолчанию:** {updated_prof.get('variant') or '*(любой)*'}\n"
+                f"• **Шаблон титульника:** Сохранен с фото\n"
+                f"• **Режим Антиплагиат:** {anti_str}\n\n"
+                "✅ *Новый постоянный образец титульника сохранен!*\n"
+                "Нажмите кнопку ниже, чтобы изменить нужное поле:"
+            )
+            card_msg = session.get("active_card_msg")
+            if card_msg:
+                await safe_edit(card_msg, text, reply_markup=get_profile_keyboard(updated_prof))
+                await safe_delete_msg(bot, chat_id, status_msg.message_id)
+            else:
+                await safe_edit(status_msg, text, reply_markup=get_profile_keyboard(updated_prof))
+            if prof.get("clean_chat_mode", 0) == 1:
+                await safe_delete_msg(bot, chat_id, message.message_id)
+        except Exception as e:
+            await safe_edit(status_msg, f"❌ Ошибка сохранения шаблона: {e}")
+        return
+
     if is_wish_or_sample:
         status_msg = await message.answer("📸 Изучаю образец оформления на фотографии...")
         track_message(user_id, status_msg.message_id)
@@ -493,6 +536,44 @@ async def handle_document(message: Message):
 
     user_dir = get_user_dir(user_id)
     local_file_path = os.path.join(user_dir, filename)
+
+    if waiting_input == "custom_title_template":
+        status_msg = await message.answer(f"📥 Считываю постоянный шаблон титульника из `{filename}`...")
+        track_message(user_id, status_msg.message_id)
+        try:
+            await message.bot.download(doc, destination=local_file_path)
+            sample_text = await extract_text_from_file(local_file_path, max_chars=config.MAX_PROMPT_CHARS)
+            if not sample_text.strip():
+                await safe_edit(status_msg, "❌ Не удалось прочитать шаблон из файла.")
+                return
+            update_profile(user_id, custom_title_template=sample_text.strip())
+            session["waiting_input"] = None
+            updated_prof = get_profile(user_id)
+            anti_str = "ВКЛ (высокая оригинальность)" if updated_prof.get("antiplagiat_mode", 1) else "ВЫКЛ"
+            text = (
+                "👤 **Ваш студенческий профиль:**\n\n"
+                f"• **ФИО студента:** {updated_prof.get('full_name') or '*(не указано)*'}\n"
+                f"• **Группа:** {updated_prof.get('group_name') or '*(не указано)*'}\n"
+                f"• **ВУЗ / Организация:** {updated_prof.get('university') or '*(не указано)*'}\n"
+                f"• **Преподаватель:** {updated_prof.get('teacher') or '*(не указано)*'}\n"
+                f"• **Дисциплина:** {updated_prof.get('discipline') or '*(не указано)*'}\n"
+                f"• **Вариант по умолчанию:** {updated_prof.get('variant') or '*(любой)*'}\n"
+                f"• **Шаблон титульника:** Сохранен из `{filename}`\n"
+                f"• **Режим Антиплагиат:** {anti_str}\n\n"
+                f"✅ *Постоянный образец титульника сохранен из `{filename}`!*\n"
+                "Нажмите кнопку ниже, чтобы изменить нужное поле:"
+            )
+            card_msg = session.get("active_card_msg")
+            if card_msg:
+                await safe_edit(card_msg, text, reply_markup=get_profile_keyboard(updated_prof))
+                await safe_delete_msg(bot, chat_id, status_msg.message_id)
+            else:
+                await safe_edit(status_msg, text, reply_markup=get_profile_keyboard(updated_prof))
+            if prof.get("clean_chat_mode", 0) == 1:
+                await safe_delete_msg(bot, chat_id, message.message_id)
+        except Exception as e:
+            await safe_edit(status_msg, f"❌ Ошибка сохранения шаблона: {e}")
+        return
 
     if is_wish_or_sample:
         status_msg = await message.answer(f"📥 Изучаю образец оформления из `{filename}`...")
@@ -666,6 +747,75 @@ async def cb_set_variant(call: CallbackQuery):
     await safe_edit(call.message, "🎯 **Напишите номер вашего варианта** (например: `7` или `14`):", reply_markup=get_cancel_keyboard(back_to))
 
 
+@router.callback_query(F.data == "prof_title_template")
+async def cb_prof_title_template(call: CallbackQuery):
+    user_id = call.from_user.id
+    prof = get_profile(user_id)
+    template = prof.get("custom_title_template") or "Образец МТИ"
+    preview = template[:400] + ("..." if len(template) > 400 else "")
+
+    text = (
+        "📋 **Постоянный образец титульного листа:**\n\n"
+        f"```\n{preview}\n```\n\n"
+        "💡 *Этот титульник используется во всех отчетах по умолчанию. "
+        "В нем автоматически обновляются преподаватель, студент, дисциплина и тема работы.*\n\n"
+        "Что вы хотите сделать?"
+    )
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="✏️ Задать свой текст / файл", callback_data="edit_custom_title_tmpl"),
+                InlineKeyboardButton(text="🔄 Сбросить к образцу МТИ", callback_data="reset_title_tmpl_mti")
+            ],
+            [
+                InlineKeyboardButton(text="🔙 Назад в профиль", callback_data="cancel_profile")
+            ]
+        ]
+    )
+    await safe_edit(call.message, text, reply_markup=kb)
+
+
+@router.callback_query(F.data == "edit_custom_title_tmpl")
+async def cb_edit_custom_title_tmpl(call: CallbackQuery):
+    user_id = call.from_user.id
+    if user_id not in user_sessions:
+        user_sessions[user_id] = {}
+    user_sessions[user_id]["waiting_input"] = "custom_title_template"
+    user_sessions[user_id]["active_card_msg"] = call.message
+
+    await call.answer()
+    await safe_edit(
+        call.message,
+        "✍️ **Отправьте текст или файл с новым образцом титульника** (`.docx`, `.pdf` или фото):\n\n"
+        "Он будет сохранен в вашем профиле как постоянный шаблон.",
+        reply_markup=get_cancel_keyboard("profile")
+    )
+
+
+@router.callback_query(F.data == "reset_title_tmpl_mti")
+async def cb_reset_title_tmpl_mti(call: CallbackQuery):
+    user_id = call.from_user.id
+    from database import DEFAULT_TITLE_TEMPLATE
+    update_profile(user_id, custom_title_template=DEFAULT_TITLE_TEMPLATE)
+    await call.answer("Шаблон сброшен к стандартному МТИ!")
+    prof = get_profile(user_id)
+    anti_str = "ВКЛ (высокая оригинальность)" if prof.get("antiplagiat_mode", 1) else "ВЫКЛ"
+    text = (
+        "👤 **Ваш студенческий профиль:**\n\n"
+        f"• **ФИО студента:** {prof.get('full_name') or '*(не указано)*'}\n"
+        f"• **Группа:** {prof.get('group_name') or '*(не указано)*'}\n"
+        f"• **ВУЗ / Организация:** {prof.get('university') or '*(не указано)*'}\n"
+        f"• **Преподаватель:** {prof.get('teacher') or '*(не указано)*'}\n"
+        f"• **Дисциплина:** {prof.get('discipline') or '*(не указано)*'}\n"
+        f"• **Вариант по умолчанию:** {prof.get('variant') or '*(любой)*'}\n"
+        f"• **Шаблон титульника:** МТИ (зафиксирован)\n"
+        f"• **Режим Антиплагиат:** {anti_str}\n\n"
+        "💡 *Эти данные автоматически подставляются в титульный лист.*\n"
+        "Нажмите кнопку ниже, чтобы изменить нужное поле:"
+    )
+    await safe_edit(call.message, text, reply_markup=get_profile_keyboard(prof))
+
+
 @router.callback_query(F.data.startswith("prof_"))
 async def cb_edit_profile_field(call: CallbackQuery):
     user_id = call.from_user.id
@@ -826,6 +976,26 @@ async def handle_text_message(message: Message):
                     reply_markup=get_options_keyboard(prof, user_text, sample_name=sample_name)
                 )
             return
+        elif field == "custom_title_template":
+            update_profile(user_id, custom_title_template=user_text)
+            updated_prof = get_profile(user_id)
+            anti_str = "ВКЛ (высокая оригинальность)" if updated_prof.get("antiplagiat_mode", 1) else "ВЫКЛ"
+            text = (
+                "👤 **Ваш студенческий профиль:**\n\n"
+                f"• **ФИО студента:** {updated_prof.get('full_name') or '*(не указано)*'}\n"
+                f"• **Группа:** {updated_prof.get('group_name') or '*(не указано)*'}\n"
+                f"• **ВУЗ / Организация:** {updated_prof.get('university') or '*(не указано)*'}\n"
+                f"• **Преподаватель:** {updated_prof.get('teacher') or '*(не указано)*'}\n"
+                f"• **Дисциплина:** {updated_prof.get('discipline') or '*(не указано)*'}\n"
+                f"• **Вариант по умолчанию:** {updated_prof.get('variant') or '*(любой)*'}\n"
+                f"• **Шаблон титульника:** Сохранен индивидуальный\n"
+                f"• **Режим Антиплагиат:** {anti_str}\n\n"
+                "✅ *Новый постоянный образец титульника успешно сохранен!*\n"
+                "Нажмите кнопку ниже, чтобы изменить нужное поле:"
+            )
+            if card_msg:
+                await safe_edit(card_msg, text, reply_markup=get_profile_keyboard(updated_prof))
+            return
         elif field in ["full_name", "group_name", "university", "teacher", "discipline", "variant"]:
             update_profile(user_id, **{field: user_text})
             updated_prof = get_profile(user_id)
@@ -912,7 +1082,7 @@ async def process_edit(message: Message, status_msg: Message, user_id: int, edit
     prof = get_profile(user_id)
 
     try:
-        new_code = await llm_service.edit_existing_code(old_code, edit_instructions)
+        new_code = await llm_service.edit_existing_code(old_code, edit_instructions, profile=prof)
         await safe_edit(status_msg, "⚡ Пересобираю документ Word и обновляю PDF...")
         success, docx_path, pdf_path, chart_paths, error_msg = await execute_with_auto_fix(new_code, user_dir, status_msg)
 

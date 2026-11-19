@@ -160,16 +160,26 @@ class LLMService:
         user_instructions: str,
         profile: Optional[Dict[str, Any]] = None
     ) -> str:
-        """Генерация первичного скрипта с учетом профиля студента, варианта и антиплагиата."""
+        """Генерация первичного скрипта с учетом профиля студента, варианта, антиплагиата и кнопок-переключателей."""
         profile_details = ""
+        include_title = 1
+        include_charts = 1
+        include_questions = 1
+        omit_theory = 1
+
         if profile:
             items = []
+            include_title = profile.get("include_title", 1)
+            include_charts = profile.get("include_charts", 1)
+            include_questions = profile.get("include_questions", 1)
+            omit_theory = profile.get("omit_theory", 1)
+
             if profile.get("full_name"):
                 items.append(f"• ФИО Студента: {profile['full_name']}")
             if profile.get("group_name"):
                 items.append(f"• Группа: {profile['group_name']}")
             if profile.get("university"):
-                items.append(f"• ВУЗ / Кафедра: {profile['university']}")
+                items.append(f"• Организация / ВУЗ: {profile['university']}")
             if profile.get("teacher"):
                 items.append(f"• Преподаватель: {profile['teacher']}")
             if profile.get("discipline"):
@@ -177,39 +187,88 @@ class LLMService:
             if profile.get("variant"):
                 items.append(f"• ВАРИАНТ ЗАДАНИЯ: Выполни строго для варианта №{profile['variant']}")
             if profile.get("antiplagiat_mode"):
-                items.append("• РЕЖИМ АНТИПЛАГИАТ: Пиши введение, ход работы и выводы уникальным авторским языком, избегая шаблонных фраз, чтобы отчет легко проходил проверку на оригинальность 80%+.")
-            
+                items.append("• РЕЖИМ АНТИПЛАГИАТ: Пиши введение, ход работы и выводы уникальным авторским языком (80%+ оригинальность).")
+
+            # КРИТИЧЕСКИЕ ПЕРЕКЛЮЧАТЕЛИ (КНОПКИ В ИНТЕРФЕЙСЕ):
+            if include_title == 0:
+                items.append("• ❌ ТИТУЛЬНЫЙ ЛИСТ ВЫКЛЮЧЕН (include_title = 0): КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО создавать титульный лист! В документе НЕ ДОЛЖНО БЫТЬ титульного листа, шапки ВУЗа, фамилий исполнителя/проверяющего на первой странице. Сразу начинай документ с заголовка '1. ВВЕДЕНИЕ'!")
+            else:
+                items.append("• ✅ ТИТУЛЬНЫЙ ЛИСТ ВКЛЮЧЕН (include_title = 1): Создай титульный лист первой страницей.")
+
+            if include_charts == 0:
+                items.append("• ❌ ГРАФИКИ И ДИАГРАММЫ ВЫКЛЮЧЕНЫ (include_charts = 0): КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО использовать matplotlib, строить схемы или вставлять картинки (doc.add_picture)! В документе НЕ ДОЛЖНО БЫТЬ НИ ОДНОГО РИСУНКА!")
+            else:
+                items.append("• ✅ ГРАФИКИ ВКЛЮЧЕНЫ (include_charts = 1): Отрисуй наглядную диаграмму/схему matplotlib.")
+
+            if omit_theory == 1:
+                items.append("• 📉 БЕЗ ТЕОРИИ (omit_theory = 1): НЕ включай разделы теоретических сведений, сразу переходи к практической части.")
+
+            if include_questions == 0:
+                items.append("• ❌ КОНТРОЛЬНЫЕ ВОПРОСЫ ВЫКЛЮЧЕНЫ (include_questions = 0): НЕ создавай раздел контрольных вопросов.")
+            else:
+                items.append("• ✅ КОНТРОЛЬНЫЕ ВОПРОСЫ ВКЛЮЧЕНЫ (include_questions = 1): Обязательно дай развернутые ответы на контрольные вопросы в самом конце отчета.")
+
+            # Постоянный образец титульника студента
+            custom_title = profile.get("custom_title_template")
+            if custom_title and include_title == 1:
+                items.append(
+                    f"• 📋 ПОСТОЯННЫЙ ОБРАЗЕЦ ТИТУЛЬНОГО ЛИСТА (СТРОГО ОБЯЗАТЕЛЕН К ПРИМЕНЕНИЮ):\n"
+                    f"{custom_title}\n"
+                    f"Подставь актуальные данные: студент {profile.get('full_name')}, группа {profile.get('group_name')}, преподаватель {profile.get('teacher')}, дисциплина {profile.get('discipline')}!"
+                )
+
             if items:
-                profile_details = "СОХРАНЕННЫЙ ПРОФИЛЬ И ПАРАМЕТРЫ СТУДЕНТА:\n" + "\n".join(items) + "\n\n"
+                profile_details = "ПАРАМЕТРЫ И СТАНДАРТЫ ОФОРМЛЕНИЯ СТУДЕНТА:\n" + "\n".join(items) + "\n\n"
 
         user_prompt = (
             f"{profile_details}"
             f"МЕТОДИЧЕСКИЕ УКАЗАНИЯ / ТЕКСТ ЛАБОРАТОРНОЙ РАБОТЫ:\n"
             f"{lab_text}\n\n"
             f"ДОПОЛНИТЕЛЬНЫЕ ПОЖЕЛАНИЯ СТУДЕНТА:\n"
-            f"{user_instructions or 'Сделай качественный типовой отчет по ГОСТ со стандартным академическим оформлением, титульным листом, диаграммой, таблицами и ответами на контрольные вопросы в самом конце.'}\n\n"
+            f"{user_instructions or 'Сделай качественный типовой отчет по ГОСТ со стандартным академическим оформлением.'}\n\n"
             f"СТРОГИЙ СТАНДАРТ ОФОРМЛЕНИЯ:\n"
             f"1. ТЕКСТ: Никакого цветного текста! Весь текст, включая заголовки H1/H2 и таблицы, должен быть СТРОГО ОБЫЧНОГО ЧЕРНОГО ЦВЕТА (RGBColor(0, 0, 0)).\n"
-            f"2. ТАБЛИЦЫ: Обычные черно-белые таблицы по ГОСТ (Table Grid). КАТЕГОРИЧЕСКИ БЕЗ цветных заливок и разукрашивания (шапка и ячейки без фона, только черный текст на белом фоне).\n\n"
+            f"2. ТАБЛИЦЫ: Обычные черно-белые таблицы по ГОСТ (Table Grid). КАТЕГОРИЧЕСКИ БЕЗ цветных заливок и разукрашивания (шапка и ячейки без фона, только черный текст на белом фоне).\n"
+            f"{'3. ВНИМАНИЕ: КАТЕГОРИЧЕСКИ БЕЗ ТИТУЛЬНИКА (начинать сразу с Введения)!' if include_title == 0 else ''}\n"
+            f"{'4. ВНИМАНИЕ: КАТЕГОРИЧЕСКИ БЕЗ ГРАФИКОВ И ДИАГРАММ (никакого matplotlib)!' if include_charts == 0 else ''}\n\n"
             f"Напиши полный Python-код скрипта генерации result.docx."
         )
         logger.info("Отправка запроса на первичную генерацию кода в LLM...")
         raw_resp = await self._call_llm(SYSTEM_PROMPT_GENERATOR, user_prompt)
         return self._extract_code(raw_resp)
 
-    async def edit_existing_code(self, old_code: str, edit_instructions: str) -> str:
-        """Внесение правок в существующий скрипт по запросу пользователя."""
+    async def edit_existing_code(
+        self, 
+        old_code: str, 
+        edit_instructions: str,
+        profile: Optional[Dict[str, Any]] = None
+    ) -> str:
+        """Внесение правок в существующий скрипт по запросу пользователя с безусловным приоритетом замечаний."""
+        profile_notes = ""
+        if profile:
+            flags = []
+            if profile.get("include_title") == 0 or any(k in edit_instructions.lower() for k in ["без титульник", "убери титульник", "удали титульник"]):
+                flags.append("• ❌ ТИТУЛЬНЫЙ ЛИСТ ДОЛЖЕН БЫТЬ ПОЛНОСТЬЮ УДАЛЕН ИЗ СКРИПТА! Начинай документ сразу с '1. ВВЕДЕНИЕ'.")
+            if profile.get("include_charts") == 0 or any(k in edit_instructions.lower() for k in ["без график", "убери график", "удали график", "без диаграмм", "убери диаграмм"]):
+                flags.append("• ❌ ГРАФИКИ И ДИАГРАММЫ ДОЛЖНЫ БЫТЬ ПОЛНОСТЬЮ УДАЛЕНЫ (весь matplotlib, plt.savefig и doc.add_picture)!")
+            if flags:
+                profile_notes = "ТРЕБОВАНИЯ К УДАЛЕНИЮ ЭЛЕМЕНТОВ:\n" + "\n".join(flags) + "\n\n"
+
         user_prompt = (
-            f"ПРЕДЫДУЩАЯ ВЕРСИЯ СКРИПТА:\n"
+            f"🚨 ЗАМЕЧАНИЯ И ПРАВКИ ПОЛЬЗОВАТЕЛЯ (ВЫПОЛНИТЬ В ПЕРВУЮ ОЧЕРЕДЬ И БЕЗУСЛОВНО!):\n"
+            f"\"\"\"\n{edit_instructions}\n\"\"\"\n\n"
+            f"{profile_notes}"
+            f"ТЕКУЩИЙ СКРИПТ, КОТОРЫЙ ТРЕБУЕТСЯ ИСПРАВИТЬ:\n"
             f"```python\n{old_code}\n```\n\n"
-            f"ТРЕБУЕМЫЕ ИЗМЕНЕНИЯ И ПРАВКИ:\n"
-            f"{edit_instructions}\n\n"
-            f"СТАНДАРТ ОФОРМЛЕНИЯ:\n"
-            f"• ТЕКСТ: Никакого цветного текста! Весь текст строго обычного черного цвета (RGBColor(0, 0, 0)).\n"
-            f"• ТАБЛИЦЫ: Обычные черно-белые по ГОСТ (Table Grid), без цветной заливки и разукрашивания.\n\n"
-            f"Верни обновленный и полностью работоспособный скрипт генерации result.docx целиком."
+            f"ИНСТРУКЦИЯ ПО ВНЕСЕНИЮ ИЗМЕНЕНИЙ:\n"
+            f"1. Модифицируй предоставленный скрипт, РЕАЛЬНО И БЕЗУСЛОВНО применив все указанные замечания пользователя.\n"
+            f"2. Если пользователь просил что-то удалить (титульник, графики, раздел) — удали их код полностью!\n"
+            f"3. Если пользователь прислал образец титульника — перепиши функцию титульника один-в-один под образец.\n"
+            f"4. Если пользователь просил изменить цель, задачи, расчеты, формулы, вывод или преподавателя — внеси именно эти изменения!\n"
+            f"5. СТАНДАРТ: строго черный текст (RGBColor(0, 0, 0)), обычные черно-белые таблицы Table Grid без цветной заливки.\n\n"
+            f"Верни полный обновленный Python-код скрипта генерации result.docx в блоке ```python ... ```."
         )
-        logger.info("Отправка запроса на модификацию скрипта в LLM...")
+        logger.info("Отправка запроса на модификацию скрипта в LLM с высшим приоритетом правок...")
         raw_resp = await self._call_llm(SYSTEM_PROMPT_EDITOR, user_prompt)
         return self._extract_code(raw_resp)
 

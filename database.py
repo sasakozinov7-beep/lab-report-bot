@@ -7,6 +7,23 @@ from datetime import datetime
 DB_PATH = os.path.join(os.path.dirname(__file__), "sessions", "bot.db")
 
 
+DEFAULT_TITLE_TEMPLATE = """Образовательная автономная некоммерческая организация высшего образования
+«МОСКОВСКИЙ ТЕХНОЛОГИЧЕСКИЙ ИНСТИТУТ»
+
+по дисциплине
+«{discipline}»
+на тему
+«{topic}»
+
+Выполнил:
+студент группы {group_name} {full_name}
+
+Проверил:
+{teacher}
+
+Москва 2026"""
+
+
 def init_db():
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
     with sqlite3.connect(DB_PATH) as conn:
@@ -28,15 +45,18 @@ def init_db():
                 include_charts INTEGER DEFAULT 1,
                 variant TEXT DEFAULT '',
                 clean_chat_mode INTEGER DEFAULT 0,
+                custom_title_template TEXT DEFAULT '',
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
 
-        # Миграция: проверяем наличие колонки clean_chat_mode в существующих БД
+        # Миграция: проверяем наличие колонок в существующих БД
         cursor.execute("PRAGMA table_info(user_profiles)")
         cols = [row[1] for row in cursor.fetchall()]
         if "clean_chat_mode" not in cols:
             cursor.execute("ALTER TABLE user_profiles ADD COLUMN clean_chat_mode INTEGER DEFAULT 0")
+        if "custom_title_template" not in cols:
+            cursor.execute("ALTER TABLE user_profiles ADD COLUMN custom_title_template TEXT DEFAULT ''")
         
         # Таблица истории сгенерированных лабораторных работ
         cursor.execute("""
@@ -61,12 +81,36 @@ def get_profile(user_id: int) -> Dict[str, Any]:
         row = cursor.fetchone()
         if not row:
             cursor.execute("""
-                INSERT INTO user_profiles (user_id) VALUES (?)
-            """, (user_id,))
+                INSERT INTO user_profiles (
+                    user_id, full_name, group_name, university, teacher, discipline, custom_title_template
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (
+                user_id, 
+                "Плотникова Таисия", 
+                "ОККИПд-305", 
+                "ОАНО ВО «МОСКОВСКИЙ ТЕХНОЛОГИЧЕСКИЙ ИНСТИТУТ»", 
+                "преподаватель Радонежская Нина Владиславовна", 
+                "4.01 Внедрение информационных систем",
+                DEFAULT_TITLE_TEMPLATE
+            ))
             conn.commit()
             cursor.execute("SELECT * FROM user_profiles WHERE user_id = ?", (user_id,))
             row = cursor.fetchone()
-        return dict(row)
+
+        data = dict(row)
+        if not data.get("custom_title_template"):
+            data["custom_title_template"] = DEFAULT_TITLE_TEMPLATE
+        if not data.get("full_name"):
+            data["full_name"] = "Плотникова Таисия"
+        if not data.get("group_name"):
+            data["group_name"] = "ОККИПд-305"
+        if not data.get("university"):
+            data["university"] = "ОАНО ВО «МОСКОВСКИЙ ТЕХНОЛОГИЧЕСКИЙ ИНСТИТУТ»"
+        if not data.get("teacher"):
+            data["teacher"] = "преподаватель Радонежская Нина Владиславовна"
+        if not data.get("discipline"):
+            data["discipline"] = "4.01 Внедрение информационных систем"
+        return data
 
 
 def update_profile(user_id: int, **kwargs):
@@ -74,7 +118,7 @@ def update_profile(user_id: int, **kwargs):
         "full_name", "group_name", "university", "teacher", 
         "discipline", "antiplagiat_mode", "include_title", 
         "include_questions", "omit_theory", "include_charts", "variant",
-        "clean_chat_mode"
+        "clean_chat_mode", "custom_title_template"
     ]
     updates = []
     values = []
