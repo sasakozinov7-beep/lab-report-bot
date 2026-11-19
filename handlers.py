@@ -27,7 +27,6 @@ from database import (
 logger = logging.getLogger(__name__)
 router = Router()
 
-# Хранилище сессий пользователей в оперативной памяти
 user_sessions: Dict[int, Dict[str, Any]] = {}
 
 BASE_SESSIONS_DIR = os.path.join(os.path.dirname(__file__), "sessions")
@@ -40,8 +39,19 @@ def get_user_dir(user_id: int) -> str:
     return path
 
 
+async def safe_edit(msg: Message, text: str, reply_markup: Optional[InlineKeyboardMarkup] = None) -> None:
+    """Безопасное редактирование сообщения с защитой от TelegramBadRequest."""
+    try:
+        await msg.edit_text(text, reply_markup=reply_markup, parse_mode="Markdown")
+    except Exception:
+        try:
+            await msg.answer(text, reply_markup=reply_markup, parse_mode="Markdown")
+        except Exception:
+            pass
+
+
 def get_options_keyboard(profile: Dict[str, Any]) -> InlineKeyboardMarkup:
-    """Генерация интерактивной клавиатуры параметров отчета."""
+    """Интерактивная клавиатура параметров отчета."""
     t_title = "✅ Вкл" if profile.get("include_title", 1) else "❌ Выкл"
     t_quest = "✅ Вкл" if profile.get("include_questions", 1) else "❌ Выкл"
     t_theor = "✅ Вкл" if profile.get("omit_theory", 1) else "❌ Выкл"
@@ -105,21 +115,12 @@ def get_profile_keyboard(profile: Dict[str, Any]) -> InlineKeyboardMarkup:
 @router.message(CommandStart())
 async def cmd_start(message: Message):
     welcome_text = (
-        "👋 **Добро пожаловать в генератор академических отчетов по лабораторным работам!**\n\n"
-        "✨ **Что умеет бот:**\n"
-        "• 📄 Принимает методички в любых форматах (`.pdf`, `.docx`, `.txt`, `.md`)\n"
-        "• 📸 **Распознает фото и сканы заданий** прямо с камеры телефона\n"
-        "• 🎓 Форматирует документ по ГОСТ (поля 30/15/20, шрифт Times New Roman, таблицы)\n"
-        "• 📐 Вставляет аккуратные математические формулы Word (OMML)\n"
-        "• 📊 Строит схемы и графики (`matplotlib`) и присылает их превью\n"
-        "• 📑 **Автоматически создает PDF** вместе с DOCX\n"
-        "• 🛡️ Режим «Антиплагиат» — уникализирует выводы и текст\n"
-        "• 🔄 Итеративно правит документ по вашим комментариям\n\n"
-        "⚙️ **Полезные команды:**\n"
-        "• /profile — сохранить свои ФИО, группу, ВУЗ и препода, чтобы не вводить каждый раз\n"
-        "• /my_labs — история ваших сгенерированных отчетов\n"
-        "• /reset — сбросить текущую работу\n\n"
-        "👉 **Для начала просто отправьте файл методички или фотографию задания!**"
+        "👋 **Привет! Я бот для быстрой сборки академических отчетов по ГОСТу.**\n\n"
+        "📄 **Как получить готовый отчет:**\n"
+        "1. Отправь **файл методички** (`.pdf`, `.docx`, `.txt`) или **фото задания**.\n"
+        "2. Укажи свои требования или нажми **«Сгенерировать отчет»**.\n"
+        "3. Забирай готовый документ в **DOCX** и **PDF** с решением, таблицами, формулами и графиками!\n\n"
+        "⚙️ Введи /profile, чтобы один раз сохранить свои ФИО, группу и препода."
     )
     await message.answer(welcome_text, parse_mode="Markdown")
 
@@ -139,7 +140,7 @@ async def cmd_profile(message: Message):
         f"• **Дисциплина:** {prof.get('discipline') or '*(не указано)*'}\n"
         f"• **Вариант по умолчанию:** {prof.get('variant') or '*(любой)*'}\n"
         f"• **Режим Антиплагиат:** {anti_str}\n\n"
-        "💡 *Эти данные автоматически подставляются в титульный лист каждой работы.*\n"
+        "💡 *Эти данные автоматически подставляются в титульный лист.*\n"
         "Нажмите кнопку ниже, чтобы изменить нужное поле:"
     )
     await message.answer(text, reply_markup=get_profile_keyboard(prof), parse_mode="Markdown")
@@ -208,18 +209,18 @@ async def cmd_reset(message: Message):
 @router.message(F.photo)
 async def handle_photo(message: Message):
     user_id = message.from_user.id
-    photo = message.photo[-1]  # Наибольшее разрешение
+    photo = message.photo[-1]
     user_dir = get_user_dir(user_id)
     local_photo_path = os.path.join(user_dir, f"task_photo_{photo.file_id}.jpg")
 
-    status_msg = await message.answer("📸 Получено фото задания! Распознаю текст и формулы с помощью нейросети...")
+    status_msg = await message.answer("📸 Получено фото задания! Распознаю текст нейросетью...")
 
     try:
         await message.bot.download(photo, destination=local_photo_path)
         extracted_text = await extract_text_from_file(local_photo_path, max_chars=config.MAX_PROMPT_CHARS)
 
         if not extracted_text.strip() or len(extracted_text) < 20:
-            await status_msg.edit_text("❌ Не удалось распознать текст на фотографии. Попробуйте сделать снимок четче.")
+            await safe_edit(status_msg, "❌ Не удалось распознать текст на фотографии. Попробуйте сделать снимок четче.")
             return
 
         user_sessions[user_id] = {
@@ -236,16 +237,16 @@ async def handle_photo(message: Message):
             user_sessions[user_id]["custom_instructions"] = caption
 
         preview_text = extracted_text[:350] + ("..." if len(extracted_text) > 350 else "")
-        await status_msg.edit_text(
-            f"✅ **Задание успешно распознано с фото!**\n\n"
+        await safe_edit(
+            status_msg,
+            f"✅ **Задание распознано!**\n\n"
             f"📖 *Фрагмент:*\n_{preview_text}_\n\n"
-            f"Настройте параметры ниже или нажмите **«Сгенерировать отчет»**:",
-            reply_markup=get_options_keyboard(prof),
-            parse_mode="Markdown"
+            f"Нажмите **«Сгенерировать отчет»** для запуска:",
+            reply_markup=get_options_keyboard(prof)
         )
     except Exception as e:
         logger.exception("Ошибка при обработке фото")
-        await status_msg.edit_text(f"❌ Ошибка распознавания фото:\n`{str(e)}`")
+        await safe_edit(status_msg, f"❌ Ошибка распознавания фото:\n`{str(e)}`")
 
 
 # -------------------------------------------------------------
@@ -266,14 +267,14 @@ async def handle_document(message: Message):
     user_dir = get_user_dir(user_id)
     local_file_path = os.path.join(user_dir, filename)
 
-    status_msg = await message.answer(f"📥 Скачиваю и анализирую `{filename}`...")
+    status_msg = await message.answer(f"📥 Читаю `{filename}`...")
 
     try:
         await message.bot.download(doc, destination=local_file_path)
         extracted_text = await extract_text_from_file(local_file_path, max_chars=config.MAX_PROMPT_CHARS)
 
         if not extracted_text.strip():
-            await status_msg.edit_text("❌ Не удалось извлечь текст. Возможно, файл пустой или поврежден.")
+            await safe_edit(status_msg, "❌ Не удалось извлечь текст. Возможно, файл пустой или поврежден.")
             return
 
         user_sessions[user_id] = {
@@ -290,16 +291,16 @@ async def handle_document(message: Message):
             user_sessions[user_id]["custom_instructions"] = caption
 
         preview_text = extracted_text[:350] + ("..." if len(extracted_text) > 350 else "")
-        await status_msg.edit_text(
-            f"✅ **Методичка `{filename}` успешно прочитана!**\n\n"
+        await safe_edit(
+            status_msg,
+            f"✅ **Методичка `{filename}` прочитана!**\n\n"
             f"📖 *Фрагмент задания:*\n_{preview_text}_\n\n"
-            f"Настройте параметры или нажмите **«Сгенерировать отчет»**:",
-            reply_markup=get_options_keyboard(prof),
-            parse_mode="Markdown"
+            f"Нажмите **«Сгенерировать отчет»** для запуска:",
+            reply_markup=get_options_keyboard(prof)
         )
     except Exception as e:
         logger.exception("Ошибка при обработке документа")
-        await status_msg.edit_text(f"❌ Ошибка при чтении файла:\n`{str(e)}`")
+        await safe_edit(status_msg, f"❌ Ошибка при чтении файла:\n`{str(e)}`")
 
 
 # -------------------------------------------------------------
@@ -390,7 +391,7 @@ async def cb_start_generation(call: CallbackQuery):
         return
 
     await call.answer("Генерация запущена!")
-    status_msg = await call.message.answer("⏳ **Запускаю генерацию отчета...**")
+    status_msg = await call.message.answer("⚡ **Шаг 1/2:** Нейросеть решает задачи и пишет код сборки документа...")
     custom = user_sessions[user_id].get("custom_instructions", "")
     await process_generation(call.message, status_msg, user_id, custom)
 
@@ -427,10 +428,10 @@ async def handle_text_message(message: Message):
 
     if not has_previous_code:
         session["custom_instructions"] = user_text
-        status_msg = await message.answer("⏳ Принято! Формирую структуру работы и начинаю генерацию...")
+        status_msg = await message.answer("⚡ **Шаг 1/2:** Нейросеть решает задачи и формирует структуру работы...")
         await process_generation(message, status_msg, user_id, user_text)
     else:
-        status_msg = await message.answer("🔄 Вношу указанные правки в отчет...")
+        status_msg = await message.answer("🔄 **Вношу правки в отчет...**")
         await process_edit(message, status_msg, user_id, user_text)
 
 
@@ -441,28 +442,28 @@ async def process_generation(message: Message, status_msg: Message, user_id: int
     prof = get_profile(user_id)
 
     try:
-        await status_msg.edit_text("🧠 Нейросеть решает задачи, оформляет формулы и генерирует код отчета...")
         code = await llm_service.generate_initial_code(lab_text, instructions, profile=prof)
 
+        await safe_edit(status_msg, "⚡ **Шаг 2/2:** Компилирую документ Word, строю графики и собираю PDF...")
         success, docx_path, pdf_path, chart_paths, error_msg = await execute_with_auto_fix(code, user_dir, status_msg)
 
         if success and docx_path and os.path.exists(docx_path):
             session["last_code"] = code
             session["last_docx"] = docx_path
             
-            # Сохраняем в историю
             disc = prof.get("discipline") or "Лабораторная работа"
             add_lab_history(user_id, title=disc, discipline=disc, docx_path=docx_path, pdf_path=pdf_path)
 
             await send_completed_file(message, status_msg, docx_path, pdf_path, chart_paths)
         else:
-            await status_msg.edit_text(
-                f"❌ Не удалось скомпилировать документ:\n\n`{error_msg[:1000]}`\n\n"
-                "Попробуйте уточнить требования или отправьте /reset."
+            await safe_edit(
+                status_msg,
+                f"❌ Не удалось скомпилировать документ:\n\n`{error_msg[:800] if error_msg else 'Ошибка исполнения'}`\n\n"
+                "Попробуйте отправить /reset или уточнить задание."
             )
     except Exception as e:
         logger.exception("Ошибка в процессе генерации")
-        await status_msg.edit_text(f"❌ Критическая ошибка генерации:\n`{str(e)}`")
+        await safe_edit(status_msg, f"❌ Ошибка генерации:\n`{str(e)}`")
 
 
 async def process_edit(message: Message, status_msg: Message, user_id: int, edit_instructions: str):
@@ -472,9 +473,8 @@ async def process_edit(message: Message, status_msg: Message, user_id: int, edit
     prof = get_profile(user_id)
 
     try:
-        await status_msg.edit_text("🧠 Анализирую замечания и обновляю скрипт сборки...")
         new_code = await llm_service.edit_existing_code(old_code, edit_instructions)
-
+        await safe_edit(status_msg, "⚡ Пересобираю документ Word и обновляю PDF...")
         success, docx_path, pdf_path, chart_paths, error_msg = await execute_with_auto_fix(new_code, user_dir, status_msg)
 
         if success and docx_path and os.path.exists(docx_path):
@@ -486,17 +486,16 @@ async def process_edit(message: Message, status_msg: Message, user_id: int, edit
 
             await send_completed_file(message, status_msg, docx_path, pdf_path, chart_paths, is_update=True)
         else:
-            await status_msg.edit_text(f"❌ Ошибка при сборке обновленного документа:\n\n`{error_msg[:1000]}`")
+            await safe_edit(status_msg, f"❌ Ошибка сборки с правками:\n\n`{error_msg[:800] if error_msg else 'Ошибка'}`")
     except Exception as e:
         logger.exception("Ошибка при редактировании документа")
-        await status_msg.edit_text(f"❌ Ошибка при внесении правок:\n`{str(e)}`")
+        await safe_edit(status_msg, f"❌ Ошибка при внесении правок:\n`{str(e)}`")
 
 
 async def execute_with_auto_fix(code: str, user_dir: str, status_msg: Message, max_attempts: int = 2):
     current_code = code
 
     for attempt in range(1, max_attempts + 1):
-        await status_msg.edit_text(f"⚙️ Выполняю сборку документа (попытка {attempt})...")
         success, docx_path, pdf_path, chart_paths, error_msg = await run_generated_script(
             current_code,
             user_dir,
@@ -507,7 +506,7 @@ async def execute_with_auto_fix(code: str, user_dir: str, status_msg: Message, m
             return True, docx_path, pdf_path, chart_paths, None
 
         if attempt < max_attempts:
-            await status_msg.edit_text("🔧 Обнаружена техническая неточность. Нейросеть автоматически исправляет код...")
+            await safe_edit(status_msg, "🔧 Авто-исправление технической ошибки в коде...")
             current_code = await llm_service.fix_broken_code(current_code, error_msg or "Unknown error")
 
     return False, None, None, [], error_msg
@@ -526,13 +525,13 @@ async def send_completed_file(
     except Exception:
         pass
 
-    # 1. Если есть сгенерированные графики, отправляем превью
+    # 1. Отправка превью графиков
     if chart_paths:
         for chart_file in chart_paths[:3]:
             try:
                 await message.answer_photo(
                     photo=FSInputFile(chart_file),
-                    caption="📊 **Сгенерированная диаграмма/график к работе**"
+                    caption="📊 **График/схема к лабораторной работе**"
                 )
             except Exception:
                 pass
@@ -543,7 +542,7 @@ async def send_completed_file(
         f"✅ **Ваш отчет успешно {action_word}!**\n\n"
         "📎 **Формат:** Microsoft Word (`.docx`)\n"
         "📐 **Оформление:** ГОСТ (поля 30/15/20/20, Times New Roman, таблицы, формулы OMML)\n\n"
-        "💬 **Нужны правки?** Напишите замечания в ответ (например: *«исправь формулу во 2 вопросе»*, *«убери лишнюю теорию»*)."
+        "💬 **Нужны правки?** Просто напишите их в ответ (например: *«исправь формулу 2»*, *«убери лишний текст»*)."
     )
     await message.answer_document(
         document=FSInputFile(docx_path, filename="Laboratornaya_Rabota.docx"),
@@ -551,7 +550,7 @@ async def send_completed_file(
         parse_mode="Markdown"
     )
 
-    # 3. Отправка PDF (если доступен)
+    # 3. Отправка PDF (если сконвертирован)
     if pdf_path and os.path.exists(pdf_path):
         caption_pdf = "📑 **Версия для быстрой сдачи и просмотра (PDF)**"
         await message.answer_document(

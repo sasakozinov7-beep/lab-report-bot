@@ -18,7 +18,11 @@ class LLMService:
             genai.configure(api_key=config.GEMINI_API_KEY)
             self.gemini_model = genai.GenerativeModel(
                 model_name=config.GEMINI_MODEL,
-                generation_config={"temperature": 0.2}
+                generation_config={
+                    "temperature": 0.2,
+                    "top_p": 0.95,
+                    "max_output_tokens": 4096
+                }
             )
         else:
             from openai import AsyncOpenAI

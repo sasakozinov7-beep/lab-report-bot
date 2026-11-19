@@ -20,7 +20,7 @@ class Settings(BaseSettings):
 
     # Timeouts & Limits
     RUNNER_TIMEOUT_SECONDS: int = 90
-    MAX_PROMPT_CHARS: int = 80000
+    MAX_PROMPT_CHARS: int = 35000
 
     model_config = SettingsConfigDict(
         env_file=os.path.join(os.path.dirname(__file__), ".env"),
