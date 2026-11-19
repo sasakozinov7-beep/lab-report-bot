@@ -125,6 +125,7 @@ def get_options_keyboard(profile: Dict[str, Any], custom_text: str = "") -> Inli
 def get_profile_keyboard(profile: Dict[str, Any]) -> InlineKeyboardMarkup:
     """Клавиатура редактирования профиля."""
     anti = "ВКЛ" if profile.get("antiplagiat_mode", 1) else "ВЫКЛ"
+    clean_lbl = "🧼 Дашборд" if profile.get("clean_chat_mode", 0) == 1 else "📝 Умная"
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
             [
@@ -140,7 +141,8 @@ def get_profile_keyboard(profile: Dict[str, Any]) -> InlineKeyboardMarkup:
                 InlineKeyboardButton(text="🎯 Вариант", callback_data="prof_variant")
             ],
             [
-                InlineKeyboardButton(text=f"🛡️ Антиплагиат: {anti}", callback_data="toggle_anti_prof")
+                InlineKeyboardButton(text=f"🛡️ Антиплагиат: {anti}", callback_data="toggle_anti_prof"),
+                InlineKeyboardButton(text=f"🧹 Очистка: {clean_lbl}", callback_data="toggle_clean_mode")
             ],
             [
                 InlineKeyboardButton(text="🔄 Закрыть профиль", callback_data="close_profile")
@@ -166,10 +168,12 @@ async def cmd_start(message: Message):
     user_id = message.from_user.id
     chat_id = message.chat.id
     bot = message.bot
+    prof = get_profile(user_id)
 
-    # Удаляем входящую команду пользователя и предыдущие сообщения бота
-    await safe_delete_msg(bot, chat_id, message.message_id)
-    await clear_old_messages(bot, chat_id, user_id)
+    # Если включен режим дашборда — удаляем команду и старые карточки
+    if prof.get("clean_chat_mode", 0) == 1:
+        await safe_delete_msg(bot, chat_id, message.message_id)
+        await clear_old_messages(bot, chat_id, user_id)
 
     welcome_text = (
         "👋 **Привет! Я бот для быстрой сборки академических отчетов по ГОСТу.**\n\n"
@@ -188,12 +192,14 @@ async def cmd_profile(message: Message):
     user_id = message.from_user.id
     chat_id = message.chat.id
     bot = message.bot
-
-    await safe_delete_msg(bot, chat_id, message.message_id)
-    await clear_old_messages(bot, chat_id, user_id)
-
     prof = get_profile(user_id)
+
+    if prof.get("clean_chat_mode", 0) == 1:
+        await safe_delete_msg(bot, chat_id, message.message_id)
+        await clear_old_messages(bot, chat_id, user_id)
+
     anti_str = "ВКЛ (высокая оригинальность)" if prof.get("antiplagiat_mode", 1) else "ВЫКЛ"
+    clean_str = "🧼 Дашборд (авто-очистка команд)" if prof.get("clean_chat_mode", 0) == 1 else "📝 Умная (сохранять историю и ТЗ)"
 
     text = (
         "👤 **Ваш студенческий профиль:**\n\n"
@@ -203,7 +209,8 @@ async def cmd_profile(message: Message):
         f"• **Преподаватель:** {prof.get('teacher') or '*(не указано)*'}\n"
         f"• **Дисциплина:** {prof.get('discipline') or '*(не указано)*'}\n"
         f"• **Вариант по умолчанию:** {prof.get('variant') or '*(любой)*'}\n"
-        f"• **Режим Антиплагиат:** {anti_str}\n\n"
+        f"• **Режим Антиплагиат:** {anti_str}\n"
+        f"• **Режим очистки чата:** {clean_str}\n\n"
         "💡 *Эти данные автоматически подставляются в титульный лист.*\n"
         "Нажмите кнопку ниже, чтобы изменить нужное поле:"
     )
@@ -216,9 +223,11 @@ async def cmd_my_labs(message: Message):
     user_id = message.from_user.id
     chat_id = message.chat.id
     bot = message.bot
+    prof = get_profile(user_id)
 
-    await safe_delete_msg(bot, chat_id, message.message_id)
-    await clear_old_messages(bot, chat_id, user_id)
+    if prof.get("clean_chat_mode", 0) == 1:
+        await safe_delete_msg(bot, chat_id, message.message_id)
+        await clear_old_messages(bot, chat_id, user_id)
 
     labs = get_user_labs(user_id, limit=8)
 
@@ -244,7 +253,13 @@ async def cmd_my_labs(message: Message):
 
 @router.callback_query(F.data == "close_labs")
 async def cb_close_labs(call: CallbackQuery):
-    await safe_delete_msg(call.bot, call.message.chat.id, call.message.message_id)
+    user_id = call.from_user.id
+    prof = get_profile(user_id)
+    await call.answer()
+    if prof.get("clean_chat_mode", 0) == 1:
+        await safe_delete_msg(call.bot, call.message.chat.id, call.message.message_id)
+    else:
+        await safe_edit(call.message, "📚 История закрыта. Для повторного вызова используйте команду /my_labs.")
 
 
 @router.callback_query(F.data.startswith("getlab_"))
@@ -273,9 +288,11 @@ async def cmd_reset(message: Message):
     user_id = message.from_user.id
     chat_id = message.chat.id
     bot = message.bot
+    prof = get_profile(user_id)
 
-    await safe_delete_msg(bot, chat_id, message.message_id)
-    await clear_old_messages(bot, chat_id, user_id)
+    if prof.get("clean_chat_mode", 0) == 1:
+        await safe_delete_msg(bot, chat_id, message.message_id)
+        await clear_old_messages(bot, chat_id, user_id)
 
     if user_id in user_sessions:
         del user_sessions[user_id]
@@ -298,8 +315,10 @@ async def handle_photo(message: Message):
     user_id = message.from_user.id
     chat_id = message.chat.id
     bot = message.bot
+    prof = get_profile(user_id)
 
-    await clear_old_messages(bot, chat_id, user_id)
+    if prof.get("clean_chat_mode", 0) == 1:
+        await clear_old_messages(bot, chat_id, user_id)
 
     photo = message.photo[-1]
     user_dir = get_user_dir(user_id)
@@ -352,8 +371,10 @@ async def handle_document(message: Message):
     user_id = message.from_user.id
     chat_id = message.chat.id
     bot = message.bot
+    prof = get_profile(user_id)
 
-    await clear_old_messages(bot, chat_id, user_id)
+    if prof.get("clean_chat_mode", 0) == 1:
+        await clear_old_messages(bot, chat_id, user_id)
 
     doc = message.document
     filename = doc.file_name or "uploaded_file"
@@ -411,7 +432,7 @@ async def handle_document(message: Message):
 # Обработка Inline-кнопок опций и профиля
 # -------------------------------------------------------------
 @router.callback_query(F.data.in_({
-    "toggle_title", "toggle_quest", "toggle_theor", "toggle_chart", "toggle_anti", "toggle_anti_prof"
+    "toggle_title", "toggle_quest", "toggle_theor", "toggle_chart", "toggle_anti", "toggle_anti_prof", "toggle_clean_mode"
 }))
 async def cb_toggle_options(call: CallbackQuery):
     user_id = call.from_user.id
@@ -427,12 +448,29 @@ async def cb_toggle_options(call: CallbackQuery):
         update_profile(user_id, include_charts=0 if prof.get("include_charts", 1) else 1)
     elif call.data in ["toggle_anti", "toggle_anti_prof"]:
         update_profile(user_id, antiplagiat_mode=0 if prof.get("antiplagiat_mode", 1) else 1)
+    elif call.data == "toggle_clean_mode":
+        update_profile(user_id, clean_chat_mode=0 if prof.get("clean_chat_mode", 0) else 1)
 
     updated_prof = get_profile(user_id)
     await call.answer("Настройка обновлена")
     try:
-        if call.data == "toggle_anti_prof":
-            await call.message.edit_reply_markup(reply_markup=get_profile_keyboard(updated_prof))
+        if call.data in ["toggle_anti_prof", "toggle_clean_mode"]:
+            anti_str = "ВКЛ (высокая оригинальность)" if updated_prof.get("antiplagiat_mode", 1) else "ВЫКЛ"
+            clean_str = "🧼 Дашборд (авто-очистка команд)" if updated_prof.get("clean_chat_mode", 0) == 1 else "📝 Умная (сохранять историю и ТЗ)"
+            text = (
+                "👤 **Ваш студенческий профиль:**\n\n"
+                f"• **ФИО студента:** {updated_prof.get('full_name') or '*(не указано)*'}\n"
+                f"• **Группа:** {updated_prof.get('group_name') or '*(не указано)*'}\n"
+                f"• **ВУЗ / Кафедра:** {updated_prof.get('university') or '*(не указано)*'}\n"
+                f"• **Преподаватель:** {updated_prof.get('teacher') or '*(не указано)*'}\n"
+                f"• **Дисциплина:** {updated_prof.get('discipline') or '*(не указано)*'}\n"
+                f"• **Вариант по умолчанию:** {updated_prof.get('variant') or '*(любой)*'}\n"
+                f"• **Режим Антиплагиат:** {anti_str}\n"
+                f"• **Режим очистки чата:** {clean_str}\n\n"
+                "💡 *Эти данные автоматически подставляются в титульный лист.*\n"
+                "Нажмите кнопку ниже, чтобы изменить нужное поле:"
+            )
+            await safe_edit(call.message, text, reply_markup=get_profile_keyboard(updated_prof))
         else:
             custom = user_sessions.get(user_id, {}).get("custom_instructions", "")
             await call.message.edit_reply_markup(reply_markup=get_options_keyboard(updated_prof, custom))
@@ -490,6 +528,7 @@ async def cb_cancel_input(call: CallbackQuery):
 
     if back_to == "profile":
         anti_str = "ВКЛ (высокая оригинальность)" if prof.get("antiplagiat_mode", 1) else "ВЫКЛ"
+        clean_str = "🧼 Дашборд (авто-очистка команд)" if prof.get("clean_chat_mode", 0) == 1 else "📝 Умная (сохранять историю и ТЗ)"
         text = (
             "👤 **Ваш студенческий профиль:**\n\n"
             f"• **ФИО студента:** {prof.get('full_name') or '*(не указано)*'}\n"
@@ -498,7 +537,8 @@ async def cb_cancel_input(call: CallbackQuery):
             f"• **Преподаватель:** {prof.get('teacher') or '*(не указано)*'}\n"
             f"• **Дисциплина:** {prof.get('discipline') or '*(не указано)*'}\n"
             f"• **Вариант по умолчанию:** {prof.get('variant') or '*(любой)*'}\n"
-            f"• **Режим Антиплагиат:** {anti_str}\n\n"
+            f"• **Режим Антиплагиат:** {anti_str}\n"
+            f"• **Режим очистки чата:** {clean_str}\n\n"
             "Нажмите кнопку ниже, чтобы изменить нужное поле:"
         )
         await safe_edit(call.message, text, reply_markup=get_profile_keyboard(prof))
@@ -509,8 +549,13 @@ async def cb_cancel_input(call: CallbackQuery):
 
 @router.callback_query(F.data == "close_profile")
 async def cb_close_profile(call: CallbackQuery):
+    user_id = call.from_user.id
+    prof = get_profile(user_id)
     await call.answer("Профиль сохранен!")
-    await safe_delete_msg(call.bot, call.message.chat.id, call.message.message_id)
+    if prof.get("clean_chat_mode", 0) == 1:
+        await safe_delete_msg(call.bot, call.message.chat.id, call.message.message_id)
+    else:
+        await safe_edit(call.message, "✅ **Профиль сохранен.** Отправьте методичку (`.docx`, `.pdf`) или фото задания для начала генерации.")
 
 
 @router.callback_query(F.data == "enter_custom_text")
@@ -552,9 +597,7 @@ async def handle_text_message(message: Message):
     chat_id = message.chat.id
     bot = message.bot
     user_text = message.text.strip()
-
-    # Всегда удаляем входящее текстовое сообщение пользователя для чистоты чата
-    await safe_delete_msg(bot, chat_id, message.message_id)
+    prof = get_profile(user_id)
 
     # Проверка: ожидается ли ввод поля профиля или пожеланий
     if user_id in user_sessions and user_sessions[user_id].get("waiting_input"):
@@ -562,9 +605,12 @@ async def handle_text_message(message: Message):
         user_sessions[user_id]["waiting_input"] = None
         card_msg = user_sessions[user_id].get("active_card_msg")
 
+        # Удаляем сообщение со значением только в режиме дашборда
+        if prof.get("clean_chat_mode", 0) == 1:
+            await safe_delete_msg(bot, chat_id, message.message_id)
+
         if field == "custom_instructions":
             user_sessions[user_id]["custom_instructions"] = user_text
-            prof = get_profile(user_id)
             if card_msg:
                 await safe_edit(
                     card_msg, 
@@ -574,22 +620,27 @@ async def handle_text_message(message: Message):
             return
         elif field in ["full_name", "group_name", "university", "teacher", "discipline", "variant"]:
             update_profile(user_id, **{field: user_text})
-            prof = get_profile(user_id)
-            anti_str = "ВКЛ (высокая оригинальность)" if prof.get("antiplagiat_mode", 1) else "ВЫКЛ"
+            updated_prof = get_profile(user_id)
+            anti_str = "ВКЛ (высокая оригинальность)" if updated_prof.get("antiplagiat_mode", 1) else "ВЫКЛ"
+            clean_str = "🧼 Дашборд (авто-очистка команд)" if updated_prof.get("clean_chat_mode", 0) == 1 else "📝 Умная (сохранять историю и ТЗ)"
             text = (
                 "👤 **Ваш студенческий профиль:**\n\n"
-                f"• **ФИО студента:** {prof.get('full_name') or '*(не указано)*'}\n"
-                f"• **Группа:** {prof.get('group_name') or '*(не указано)*'}\n"
-                f"• **ВУЗ / Кафедра:** {prof.get('university') or '*(не указано)*'}\n"
-                f"• **Преподаватель:** {prof.get('teacher') or '*(не указано)*'}\n"
-                f"• **Дисциплина:** {prof.get('discipline') or '*(не указано)*'}\n"
-                f"• **Вариант по умолчанию:** {prof.get('variant') or '*(любой)*'}\n"
-                f"• **Режим Антиплагиат:** {anti_str}\n\n"
+                f"• **ФИО студента:** {updated_prof.get('full_name') or '*(не указано)*'}\n"
+                f"• **Группа:** {updated_prof.get('group_name') or '*(не указано)*'}\n"
+                f"• **ВУЗ / Кафедра:** {updated_prof.get('university') or '*(не указано)*'}\n"
+                f"• **Преподаватель:** {updated_prof.get('teacher') or '*(не указано)*'}\n"
+                f"• **Дисциплина:** {updated_prof.get('discipline') or '*(не указано)*'}\n"
+                f"• **Вариант по умолчанию:** {updated_prof.get('variant') or '*(любой)*'}\n"
+                f"• **Режим Антиплагиат:** {anti_str}\n"
+                f"• **Режим очистки чата:** {clean_str}\n\n"
                 "Нажмите кнопку ниже, чтобы изменить нужное поле:"
             )
             if card_msg:
-                await safe_edit(card_msg, text, reply_markup=get_profile_keyboard(prof))
+                await safe_edit(card_msg, text, reply_markup=get_profile_keyboard(updated_prof))
             return
+
+    # ВАЖНО: Текстовые сообщения пользователя (ТЗ, пожелания, запросы правок, обычный текст)
+    # МЫ НЕ УДАЛЯЕМ! Пользователь должен видеть свои формулировки и историю запросов.
 
     if user_id not in user_sessions or not user_sessions[user_id].get("lab_text"):
         sent = await message.answer("ℹ️ Отправьте файл методички (`.pdf`, `.docx`) или фото задания для начала работы.")

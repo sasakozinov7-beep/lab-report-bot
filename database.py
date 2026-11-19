@@ -27,9 +27,16 @@ def init_db():
                 omit_theory INTEGER DEFAULT 1,
                 include_charts INTEGER DEFAULT 1,
                 variant TEXT DEFAULT '',
+                clean_chat_mode INTEGER DEFAULT 0,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
+
+        # Миграция: проверяем наличие колонки clean_chat_mode в существующих БД
+        cursor.execute("PRAGMA table_info(user_profiles)")
+        cols = [row[1] for row in cursor.fetchall()]
+        if "clean_chat_mode" not in cols:
+            cursor.execute("ALTER TABLE user_profiles ADD COLUMN clean_chat_mode INTEGER DEFAULT 0")
         
         # Таблица истории сгенерированных лабораторных работ
         cursor.execute("""
@@ -66,7 +73,8 @@ def update_profile(user_id: int, **kwargs):
     valid_fields = [
         "full_name", "group_name", "university", "teacher", 
         "discipline", "antiplagiat_mode", "include_title", 
-        "include_questions", "omit_theory", "include_charts", "variant"
+        "include_questions", "omit_theory", "include_charts", "variant",
+        "clean_chat_mode"
     ]
     updates = []
     values = []
