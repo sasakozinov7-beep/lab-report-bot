@@ -111,11 +111,40 @@ class LLMService:
                     return "".join(p.text for p in resp.candidates[0].content.parts if hasattr(p, "text") and p.text).strip()
                 return resp.text.strip()
             else:
-                # Резервный вызов для OpenAI vision если используется openai
                 return "Изображение получено, но распознавание настроено для Gemini."
         except Exception as e:
             logger.exception("Ошибка при распознавании изображения")
             return f"Ошибка распознавания фото: {e}"
+
+    async def extract_sample_title_page(self, image_path: str) -> str:
+        """Извлечение структуры и текста образца титульного листа из фотографии/скриншота."""
+        try:
+            logger.info(f"Распознавание образца титульного листа: {image_path}")
+            img = PIL.Image.open(image_path)
+            if img.mode not in ("RGB", "L"):
+                img = img.convert("RGB")
+            if max(img.size) > 1200:
+                img.thumbnail((1200, 1200), PIL.Image.Resampling.BILINEAR)
+            prompt = (
+                "Ты эксперт по академическому оформлению отчетов. Перед тобой образец титульного листа или оформления работы. "
+                "Детально и построчно выпиши все элементы: "
+                "1. Точную шапку (Министерство, полное наименование ВУЗа, факультет/институт, кафедра). "
+                "2. Заголовок работы, дисциплину, тему и номер лабораторной. "
+                "3. Расположение и формулировку блоков исполнителя и проверяющего (например: 'Выполнил: студент гр. ..., ФИО', 'Проверил: ученая степень, должность, ФИО'). "
+                "4. Город и год внизу. "
+                "5. Все особенности разметки (выравнивание, отступы, регистр). "
+                "Сохрани все формулировки максимально точно, чтобы скрипт Word docx мог воспроизвести этот титульник."
+            )
+            if self.provider == "gemini":
+                resp = await self.gemini_model.generate_content_async([img, prompt])
+                if resp.candidates and resp.candidates[0].content and resp.candidates[0].content.parts:
+                    return "".join(p.text for p in resp.candidates[0].content.parts if hasattr(p, "text") and p.text).strip()
+                return resp.text.strip()
+            else:
+                return "Распознан образец оформления."
+        except Exception as e:
+            logger.exception("Ошибка при распознавании образца титульника")
+            return f"Образец оформления: {e}"
 
     def _extract_code(self, raw_response: str) -> str:
         """Извлекает чистый Python код из markdown-блока ```python ... ```."""
