@@ -9,7 +9,10 @@ from aiogram.types import (
     FSInputFile, 
     CallbackQuery, 
     InlineKeyboardMarkup, 
-    InlineKeyboardButton
+    InlineKeyboardButton,
+    KeyboardButton,
+    ReplyKeyboardMarkup,
+    ReplyKeyboardRemove
 )
 from aiogram.filters import Command, CommandStart
 
@@ -21,7 +24,9 @@ from database import (
     get_profile, 
     update_profile, 
     add_lab_history, 
-    get_user_labs
+    get_user_labs,
+    get_last_lab,
+    STYLE_PRESETS
 )
 
 logger = logging.getLogger(__name__)
@@ -38,6 +43,27 @@ def get_user_dir(user_id: int) -> str:
     path = os.path.join(BASE_SESSIONS_DIR, str(user_id))
     os.makedirs(path, exist_ok=True)
     return path
+
+
+# -------------------------------------------------------------
+# Постоянное нижнее меню (Reply Keyboard)
+# -------------------------------------------------------------
+def get_main_reply_keyboard() -> ReplyKeyboardMarkup:
+    """Постоянные кнопки внизу экрана для максимального удобства."""
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [
+                KeyboardButton(text="📁 Сдать новую работу"), 
+                KeyboardButton(text="👤 Мой профиль (МТИ)")
+            ],
+            [
+                KeyboardButton(text="🧠 Память стиля"), 
+                KeyboardButton(text="📚 Мои отчеты")
+            ]
+        ],
+        resize_keyboard=True,
+        is_persistent=True
+    )
 
 
 # -------------------------------------------------------------
@@ -84,23 +110,29 @@ async def safe_edit(msg: Message, text: str, reply_markup: Optional[InlineKeyboa
 
 
 # -------------------------------------------------------------
-# Клавиатуры
+# Клавиатуры и тексты интерфейса
 # -------------------------------------------------------------
 def get_options_keyboard(profile: Dict[str, Any], custom_text: str = "", sample_name: str = "") -> InlineKeyboardMarkup:
-    """Интерактивная клавиатура параметров отчета."""
-    t_title = "✅ Вкл" if profile.get("include_title", 1) else "❌ Выкл"
-    t_quest = "✅ Вкл" if profile.get("include_questions", 1) else "❌ Выкл"
-    t_theor = "✅ Вкл" if profile.get("omit_theory", 1) else "❌ Выкл"
-    t_chart = "✅ Вкл" if profile.get("include_charts", 1) else "❌ Выкл"
-    t_anti = "✅ Вкл" if profile.get("antiplagiat_mode", 1) else "❌ Выкл"
-    variant = profile.get("variant") or "Любой"
+    """Интерактивная клавиатура параметров отчета с наглядными и понятными кнопками."""
+    t_title = "✅ МТИ" if profile.get("include_title", 1) else "❌ Выкл"
+    t_quest = "✅ Ответы" if profile.get("include_questions", 1) else "❌ Выкл"
+    # omit_theory: 1 = скрыть теорию, 0 = включить теорию
+    t_theor = "❌ Скрыть" if profile.get("omit_theory", 1) else "✅ Включить"
+    t_chart = "✅ Строить" if profile.get("include_charts", 1) else "❌ Выкл"
+    t_anti = "✅ 85%+" if profile.get("antiplagiat_mode", 1) else "⚡ Обычный"
+    variant = profile.get("variant")
+    t_var = f"№ {variant}" if variant else "🎲 Любой"
+
+    preset_key = profile.get("active_style_preset", "standard")
+    preset_info = STYLE_PRESETS.get(preset_key, STYLE_PRESETS["standard"])
+    format_label = f"🎨 Формат: {preset_info['short']}"
 
     if sample_name:
         custom_label = f"📎 Образец: {sample_name[:14]}..."
     elif custom_text:
-        custom_label = f"✏️ Пожелания: {custom_text[:14]}..."
+        custom_label = f"💬 Пожелания: {custom_text[:14]}..."
     else:
-        custom_label = "✏️ Пожелания / 📎 Образец титульника"
+        custom_label = "✏️ Написать пожелания текстом"
 
     rows = [
         [
@@ -108,12 +140,15 @@ def get_options_keyboard(profile: Dict[str, Any], custom_text: str = "", sample_
             InlineKeyboardButton(text=f"❓ Вопросы: {t_quest}", callback_data="toggle_quest")
         ],
         [
-            InlineKeyboardButton(text=f"📉 Без теории: {t_theor}", callback_data="toggle_theor"),
+            InlineKeyboardButton(text=f"📖 Теория: {t_theor}", callback_data="toggle_theor"),
             InlineKeyboardButton(text=f"📊 Графики: {t_chart}", callback_data="toggle_chart")
         ],
         [
             InlineKeyboardButton(text=f"🛡️ Антиплагиат: {t_anti}", callback_data="toggle_anti"),
-            InlineKeyboardButton(text=f"🎯 Вариант: {variant}", callback_data="set_variant")
+            InlineKeyboardButton(text=f"🎯 Вариант: {t_var}", callback_data="set_variant")
+        ],
+        [
+            InlineKeyboardButton(text=format_label, callback_data="open_style_menu")
         ],
         [
             InlineKeyboardButton(text=custom_label, callback_data="enter_custom_text")
@@ -122,7 +157,7 @@ def get_options_keyboard(profile: Dict[str, Any], custom_text: str = "", sample_
 
     if custom_text or sample_name:
         rows.append([
-            InlineKeyboardButton(text="🗑️ Сбросить пожелания и образец", callback_data="clear_custom_text")
+            InlineKeyboardButton(text="🗑️ Сбросить пожелания", callback_data="clear_custom_text")
         ])
 
     rows.append([
@@ -134,7 +169,7 @@ def get_options_keyboard(profile: Dict[str, Any], custom_text: str = "", sample_
 
 def get_profile_keyboard(profile: Dict[str, Any]) -> InlineKeyboardMarkup:
     """Клавиатура редактирования профиля."""
-    anti = "ВКЛ" if profile.get("antiplagiat_mode", 1) else "ВЫКЛ"
+    anti = "ВКЛ (85%+)" if profile.get("antiplagiat_mode", 1) else "ВЫКЛ"
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
             [
@@ -142,15 +177,18 @@ def get_profile_keyboard(profile: Dict[str, Any]) -> InlineKeyboardMarkup:
                 InlineKeyboardButton(text="✏️ Учебная группа", callback_data="prof_group_name")
             ],
             [
-                InlineKeyboardButton(text="✏️ ВУЗ / Кафедра", callback_data="prof_university"),
-                InlineKeyboardButton(text="✏️ Преподаватель", callback_data="prof_teacher")
+                InlineKeyboardButton(text="✏️ Преподаватель", callback_data="prof_teacher"),
+                InlineKeyboardButton(text="✏️ Дисциплина", callback_data="prof_discipline")
             ],
             [
-                InlineKeyboardButton(text="✏️ Дисциплина", callback_data="prof_discipline"),
+                InlineKeyboardButton(text="🏛️ ВУЗ / Кафедра", callback_data="prof_university"),
                 InlineKeyboardButton(text="🎯 Вариант", callback_data="prof_variant")
             ],
             [
-                InlineKeyboardButton(text="📋 Постоянный титульник (МТИ)", callback_data="prof_title_template")
+                InlineKeyboardButton(text="📋 Настроить титульник (МТИ)", callback_data="prof_title_template")
+            ],
+            [
+                InlineKeyboardButton(text="🧠 Память стиля и пресеты", callback_data="open_style_menu")
             ],
             [
                 InlineKeyboardButton(text=f"🛡️ Антиплагиат: {anti}", callback_data="toggle_anti_prof")
@@ -163,6 +201,51 @@ def get_profile_keyboard(profile: Dict[str, Any]) -> InlineKeyboardMarkup:
     return keyboard
 
 
+def get_style_keyboard(current_preset: str = "standard") -> InlineKeyboardMarkup:
+    """Клавиатура выбора стиля и формата работы."""
+    def mark(key: str, name: str) -> str:
+        return f"🟢 {name}" if key == current_preset else name
+
+    rows = [
+        [
+            InlineKeyboardButton(text=mark("standard", "📝 Полный ГОСТ"), callback_data="style_set_standard"),
+            InlineKeyboardButton(text=mark("qa_only", "⚡ Вопрос-ответ"), callback_data="style_set_qa_only")
+        ],
+        [
+            InlineKeyboardButton(text=mark("practice_only", "🔬 Только практика"), callback_data="style_set_practice_only"),
+            InlineKeyboardButton(text=mark("repeat_last", "🔄 Как прошлая"), callback_data="style_set_repeat_last")
+        ],
+        [
+            InlineKeyboardButton(text="✏️ Написать свои требования текстом", callback_data="style_enter_custom")
+        ],
+        [
+            InlineKeyboardButton(text="🔙 Назад к параметрам", callback_data="style_back_to_options")
+        ]
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def get_style_menu_text(profile: Dict[str, Any]) -> str:
+    """Текст карточки настройки памяти стиля и форматов."""
+    preset_key = profile.get("active_style_preset", "standard")
+    preset_info = STYLE_PRESETS.get(preset_key, STYLE_PRESETS["standard"])
+    saved_inst = profile.get("last_custom_instructions", "")
+
+    inst_block = f"\n💬 *Сохраненные указания:* «_{saved_inst}_»\n" if saved_inst else ""
+
+    return (
+        "🧠 **Память стиля и формата отчетов:**\n\n"
+        f"📌 **Текущий режим:** **{preset_info['title']}**\n"
+        f"_{preset_info['desc']}_{inst_block}\n\n"
+        "⚡ **Выберите формат работы в 1 клик:**\n"
+        "• **📝 Полный ГОСТ** — классический отчет: титульник, введение, ход работы, таблицы, графики, заключение, вопросы.\n"
+        "• **⚡ Только вопросы и ответы** — без введения и заключения! Строго четкий вопрос и подробный аргументированный ответ.\n"
+        "• **🔬 Только практика** — без лишней теории, сразу к расчетам, формулам и вычислениям.\n"
+        "• **🔄 Как в прошлый раз** — повторить структуру и требования предыдущей выполненной работы.\n\n"
+        "💡 *Вы также можете в любой момент написать в чат, например: «сделай так же, как предыдущую, без введения и заключения».*"
+    )
+
+
 def get_cancel_keyboard(back_to: str = "profile") -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[[
@@ -172,60 +255,136 @@ def get_cancel_keyboard(back_to: str = "profile") -> InlineKeyboardMarkup:
 
 
 # -------------------------------------------------------------
-# Команды
+# Команды и главное меню
 # -------------------------------------------------------------
 @router.message(CommandStart())
+@router.message(F.text == "📁 Сдать новую работу")
 async def cmd_start(message: Message):
     user_id = message.from_user.id
     chat_id = message.chat.id
     bot = message.bot
 
-    # Удаляем входящую команду /start из чата
     await safe_delete_msg(bot, chat_id, message.message_id)
 
+    prof = get_profile(user_id)
+    preset_key = prof.get("active_style_preset", "standard")
+    preset_info = STYLE_PRESETS.get(preset_key, STYLE_PRESETS["standard"])
+    student_str = f"{prof.get('full_name')} ({prof.get('group_name')})"
+
     welcome_text = (
-        "👋 **Привет! Я бот для быстрой сборки академических отчетов по ГОСТу.**\n\n"
-        "📄 **Как получить готовый отчет:**\n"
-        "1. Отправь **файл методички** (`.pdf`, `.docx`, `.txt`) или **фото задания**.\n"
-        "2. Укажи свои требования или нажми **«Сгенерировать отчет»**.\n"
-        "3. Забирай готовый документ в **DOCX** и **PDF** с решением, таблицами, формулами и графиками!\n\n"
-        "⚙️ Введи /profile, чтобы один раз сохранить свои ФИО, группу и препода."
+        "🎓 **Привет! Я твой академический ассистент по лабораторным работам.**\n\n"
+        "Я собираю полноценные отчеты по ГОСТу — с формулами, расчетами, таблицами, графиками и правильным титульником.\n\n"
+        "✨ **Текущие настройки по умолчанию:**\n"
+        f"• 🏛️ **Титульный лист:** МТИ ({student_str})\n"
+        f"• 🎨 **Формат отчета:** {preset_info['title']}\n"
+        "• 📐 **Оформление:** ГОСТ (Times New Roman, поля 30/15/20/20, строгий черный текст)\n\n"
+        "🚀 **Как получить готовый отчет:**\n"
+        "1. Отправь **файл методички** (`.docx`, `.pdf`, `.txt`) или **фото задания** сюда в чат.\n"
+        "2. Или напиши свои пожелания (например: *«сделай так же, как предыдущую, без введения и заключения»*).\n"
+        "3. Забирай готовый документ в **DOCX** и **PDF**!"
     )
-    sent = await message.answer(welcome_text, parse_mode="Markdown")
+
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="👤 Профиль и титульник (МТИ)", callback_data="open_profile"),
+                InlineKeyboardButton(text="🧠 Память стиля", callback_data="open_style_menu")
+            ],
+            [
+                InlineKeyboardButton(text="📚 Мои отчеты", callback_data="open_my_labs"),
+                InlineKeyboardButton(text="❓ Как пользоваться", callback_data="open_help")
+            ]
+        ]
+    )
+
+    sent = await message.answer(welcome_text, reply_markup=kb, parse_mode="Markdown")
     track_message(user_id, sent.message_id)
+
+    # Прикрепляем постоянную нижнюю клавиатуру Telegram
+    try:
+        await message.answer("👇 Меню быстрого доступа:", reply_markup=get_main_reply_keyboard())
+    except Exception:
+        pass
 
 
 @router.message(Command("profile"))
+@router.message(F.text == "👤 Мой профиль (МТИ)")
 async def cmd_profile(message: Message):
     user_id = message.from_user.id
     chat_id = message.chat.id
     bot = message.bot
 
-    # Удаляем команду /profile из чата
     await safe_delete_msg(bot, chat_id, message.message_id)
 
     prof = get_profile(user_id)
-    anti_str = "ВКЛ (высокая оригинальность)" if prof.get("antiplagiat_mode", 1) else "ВЫКЛ"
-    title_status = "МТИ (зафиксирован)" if "МОСКОВСКИЙ ТЕХНОЛОГИЧЕСКИЙ" in prof.get("custom_title_template", "") else "Свой шаблон"
+    anti_str = "ВКЛ (высокая оригинальность 85%+)" if prof.get("antiplagiat_mode", 1) else "ВЫКЛ (базовый)"
+    preset_key = prof.get("active_style_preset", "standard")
+    preset_info = STYLE_PRESETS.get(preset_key, STYLE_PRESETS["standard"])
 
     text = (
         "👤 **Ваш студенческий профиль:**\n\n"
         f"• **ФИО студента:** {prof.get('full_name') or '*(не указано)*'}\n"
-        f"• **Группа:** {prof.get('group_name') or '*(не указано)*'}\n"
+        f"• **Учебная группа:** {prof.get('group_name') or '*(не указано)*'}\n"
         f"• **ВУЗ / Организация:** {prof.get('university') or '*(не указано)*'}\n"
         f"• **Преподаватель:** {prof.get('teacher') or '*(не указано)*'}\n"
         f"• **Дисциплина:** {prof.get('discipline') or '*(не указано)*'}\n"
-        f"• **Вариант по умолчанию:** {prof.get('variant') or '*(любой)*'}\n"
-        f"• **Шаблон титульника:** {title_status}\n"
-        f"• **Режим Антиплагиат:** {anti_str}\n\n"
-        "💡 *Эти данные автоматически подставляются в титульный лист.*\n"
-        "Нажмите кнопку ниже, чтобы изменить нужное поле:"
+        f"• **Вариант по умолчанию:** {prof.get('variant') or '*(любой)*'}\n\n"
+        "🏛️ **Оформление титульного листа:**\n"
+        "• **Стандарт:** МОСКОВСКИЙ ТЕХНОЛОГИЧЕСКИЙ ИНСТИТУТ (МТИ) ✅\n"
+        "• *Титульник создается автоматически по зафиксированному образцу.*\n\n"
+        f"🎨 **Стиль оформления:** {preset_info['title']}\n"
+        f"🛡️ **Антиплагиат:** {anti_str}\n\n"
+        "👇 *Нажмите кнопку ниже, чтобы изменить нужное поле:*"
     )
     sent = await message.answer(text, reply_markup=get_profile_keyboard(prof), parse_mode="Markdown")
     track_message(user_id, sent.message_id)
 
 
+@router.message(Command("style"))
+@router.message(F.text == "🧠 Память стиля")
+async def cmd_style(message: Message):
+    user_id = message.from_user.id
+    chat_id = message.chat.id
+    bot = message.bot
+
+    await safe_delete_msg(bot, chat_id, message.message_id)
+
+    prof = get_profile(user_id)
+    text = get_style_menu_text(prof)
+    kb = get_style_keyboard(prof.get("active_style_preset", "standard"))
+    sent = await message.answer(text, reply_markup=kb, parse_mode="Markdown")
+    track_message(user_id, sent.message_id)
+
+
+@router.message(Command("help"))
+@router.message(F.text == "❓ Помощь")
+async def cmd_help(message: Message):
+    user_id = message.from_user.id
+    chat_id = message.chat.id
+    bot = message.bot
+
+    await safe_delete_msg(bot, chat_id, message.message_id)
+
+    text = (
+        "📖 **Инструкция по использованию бота:**\n\n"
+        "1️⃣ **Отправка задания:**\n"
+        "Прикрепите методичку (`.docx`, `.pdf`, `.txt`) или фото страниц задания прямо в чат.\n\n"
+        "2️⃣ **Память стиля и пожелания:**\n"
+        "Вы можете в любой момент написать: *«сделай так же, как предыдущую»* или "
+        "*«без введения и заключения, только вопросы и ответы»* — бот запомнит это и применит к отчету.\n\n"
+        "3️⃣ **Титульный лист:**\n"
+        "По умолчанию установлен стандарт МТИ с вашими данными. Если титульник не нужен, просто нажмите кнопку `🎓 Титульник: Выкл`.\n\n"
+        "4️⃣ **Правки:**\n"
+        "После получения отчета напишите замечания в чат (например: *«замени преподавателя»*, *«убери график»*), и бот мгновенно пересоберет документ."
+    )
+    sent = await message.answer(text, reply_markup=InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text="🔙 Понятно", callback_data="close_profile")]]
+    ), parse_mode="Markdown")
+    track_message(user_id, sent.message_id)
+
+
 @router.message(Command("my_labs"))
+@router.message(F.text == "📚 Мои отчеты")
 async def cmd_my_labs(message: Message):
     user_id = message.from_user.id
     chat_id = message.chat.id
@@ -489,14 +648,27 @@ async def handle_photo(message: Message):
 
         if caption:
             user_sessions[user_id]["custom_instructions"] = caption
+        elif prof.get("last_custom_instructions"):
+            user_sessions[user_id]["custom_instructions"] = prof.get("last_custom_instructions")
 
-        preview_text = extracted_text[:300] + ("..." if len(extracted_text) > 300 else "")
+        custom_active = user_sessions[user_id].get("custom_instructions", "")
+        preset_info = STYLE_PRESETS.get(prof.get("active_style_preset", "standard"), STYLE_PRESETS["standard"])
+        preview_text = extracted_text[:280] + ("..." if len(extracted_text) > 280 else "")
+
+        student_str = f"{prof.get('full_name')} ({prof.get('group_name')})"
+        card_text = (
+            f"📸 **Задание с фото распознано!**\n\n"
+            f"👥 **Студент:** {student_str}\n"
+            f"🏛️ **Титульный лист:** МТИ (преп. {prof.get('teacher')})\n"
+            f"🎨 **Формат отчета:** {preset_info['title']}\n"
+            f"{f'💬 *Пожелания:* _{custom_active}_' + chr(10) if custom_active else ''}\n"
+            f"📖 *Фрагмент задания:*\n_{preview_text}_\n\n"
+            f"Нажмите **«Сгенерировать отчет»** для запуска:"
+        )
         await safe_edit(
             status_msg,
-            f"✅ **Задание распознано!**\n\n"
-            f"📖 *Фрагмент:*\n_{preview_text}_\n\n"
-            f"Нажмите **«Сгенерировать отчет»** для запуска:",
-            reply_markup=get_options_keyboard(prof, user_sessions[user_id].get("custom_instructions", ""))
+            card_text,
+            reply_markup=get_options_keyboard(prof, custom_active)
         )
     except Exception as e:
         logger.exception("Ошибка при обработке фото")
@@ -674,14 +846,27 @@ async def handle_document(message: Message):
 
         if caption:
             user_sessions[user_id]["custom_instructions"] = caption
+        elif prof.get("last_custom_instructions"):
+            user_sessions[user_id]["custom_instructions"] = prof.get("last_custom_instructions")
 
-        preview_text = extracted_text[:300] + ("..." if len(extracted_text) > 300 else "")
+        custom_active = user_sessions[user_id].get("custom_instructions", "")
+        preset_info = STYLE_PRESETS.get(prof.get("active_style_preset", "standard"), STYLE_PRESETS["standard"])
+        preview_text = extracted_text[:280] + ("..." if len(extracted_text) > 280 else "")
+
+        student_str = f"{prof.get('full_name')} ({prof.get('group_name')})"
+        card_text = (
+            f"📄 **Методичка `{filename}` прочитана!**\n\n"
+            f"👥 **Студент:** {student_str}\n"
+            f"🏛️ **Титульный лист:** МТИ (преп. {prof.get('teacher')})\n"
+            f"🎨 **Формат отчета:** {preset_info['title']}\n"
+            f"{f'💬 *Пожелания:* _{custom_active}_' + chr(10) if custom_active else ''}\n"
+            f"📖 *Фрагмент задания:*\n_{preview_text}_\n\n"
+            f"Нажмите **«Сгенерировать отчет»** для запуска:"
+        )
         await safe_edit(
             status_msg,
-            f"✅ **Методичка `{filename}` прочитана!**\n\n"
-            f"📖 *Фрагмент задания:*\n_{preview_text}_\n\n"
-            f"Нажмите **«Сгенерировать отчет»** для запуска:",
-            reply_markup=get_options_keyboard(prof, user_sessions[user_id].get("custom_instructions", ""))
+            card_text,
+            reply_markup=get_options_keyboard(prof, custom_active)
         )
     except Exception as e:
         logger.exception("Ошибка при обработке документа")
@@ -868,6 +1053,10 @@ async def cb_cancel_input(call: CallbackQuery):
         await safe_edit(call.message, text, reply_markup=get_profile_keyboard(prof))
     elif back_to == "edit":
         await safe_delete_msg(call.bot, call.message.chat.id, call.message.message_id)
+    elif back_to == "style":
+        text = get_style_menu_text(prof)
+        kb = get_style_keyboard(prof.get("active_style_preset", "standard"))
+        await safe_edit(call.message, text, reply_markup=kb)
     else:
         session = user_sessions.get(user_id, {})
         custom = session.get("custom_instructions", "")
@@ -885,6 +1074,174 @@ async def cb_close_profile(call: CallbackQuery):
     await safe_delete_msg(call.bot, call.message.chat.id, call.message.message_id)
 
 
+@router.callback_query(F.data == "open_profile")
+async def cb_open_profile(call: CallbackQuery):
+    user_id = call.from_user.id
+    prof = get_profile(user_id)
+    anti_str = "ВКЛ (высокая оригинальность 85%+)" if prof.get("antiplagiat_mode", 1) else "ВЫКЛ (базовый)"
+    preset_key = prof.get("active_style_preset", "standard")
+    preset_info = STYLE_PRESETS.get(preset_key, STYLE_PRESETS["standard"])
+
+    text = (
+        "👤 **Ваш студенческий профиль:**\n\n"
+        f"• **ФИО студента:** {prof.get('full_name') or '*(не указано)*'}\n"
+        f"• **Учебная группа:** {prof.get('group_name') or '*(не указано)*'}\n"
+        f"• **ВУЗ / Организация:** {prof.get('university') or '*(не указано)*'}\n"
+        f"• **Преподаватель:** {prof.get('teacher') or '*(не указано)*'}\n"
+        f"• **Дисциплина:** {prof.get('discipline') or '*(не указано)*'}\n"
+        f"• **Вариант по умолчанию:** {prof.get('variant') or '*(любой)*'}\n\n"
+        "🏛️ **Оформление титульного листа:**\n"
+        "• **Стандарт:** МОСКОВСКИЙ ТЕХНОЛОГИЧЕСКИЙ ИНСТИТУТ (МТИ) ✅\n"
+        "• *Титульник создается автоматически по зафиксированному образцу.*\n\n"
+        f"🎨 **Стиль оформления:** {preset_info['title']}\n"
+        f"🛡️ **Антиплагиат:** {anti_str}\n\n"
+        "👇 *Нажмите кнопку ниже, чтобы изменить нужное поле:*"
+    )
+    await safe_edit(call.message, text, reply_markup=get_profile_keyboard(prof))
+
+
+@router.callback_query(F.data == "open_style_menu")
+async def cb_open_style_menu(call: CallbackQuery):
+    user_id = call.from_user.id
+    prof = get_profile(user_id)
+    text = get_style_menu_text(prof)
+    kb = get_style_keyboard(prof.get("active_style_preset", "standard"))
+    await safe_edit(call.message, text, reply_markup=kb)
+
+
+@router.callback_query(F.data.startswith("style_set_"))
+async def cb_style_set_preset(call: CallbackQuery):
+    user_id = call.from_user.id
+    preset = call.data.replace("style_set_", "")
+    update_profile(user_id, active_style_preset=preset)
+
+    if preset == "repeat_last":
+        last_lab = get_last_lab(user_id)
+        if last_lab and last_lab.get("instructions"):
+            update_profile(user_id, last_custom_instructions=last_lab.get("instructions"))
+            if user_id in user_sessions:
+                user_sessions[user_id]["custom_instructions"] = last_lab.get("instructions")
+    elif preset == "qa_only":
+        qa_rule = "Без введения, без заключения, просто вопрос и ответ на него."
+        update_profile(user_id, last_custom_instructions=qa_rule)
+        if user_id in user_sessions:
+            user_sessions[user_id]["custom_instructions"] = qa_rule
+    elif preset == "practice_only":
+        update_profile(user_id, omit_theory=1)
+
+    await call.answer("Формат обновлен!")
+    prof = get_profile(user_id)
+    text = get_style_menu_text(prof)
+    kb = get_style_keyboard(prof.get("active_style_preset", "standard"))
+    await safe_edit(call.message, text, reply_markup=kb)
+
+
+@router.callback_query(F.data == "style_enter_custom")
+async def cb_style_enter_custom(call: CallbackQuery):
+    user_id = call.from_user.id
+    if user_id not in user_sessions:
+        user_sessions[user_id] = {}
+    user_sessions[user_id]["waiting_input"] = "custom_instructions"
+    user_sessions[user_id]["active_card_msg"] = call.message
+
+    await call.answer()
+    await safe_edit(
+        call.message,
+        "✍️ **Напишите ваши пожелания к стилю отчета:**\n\n"
+        "(например: *«без введения и заключения, просто вопрос и ответ на него»*, "
+        "*«сделай вариант 5»*, *«оформи кратко без теории»*)\n\n"
+        "Бот сохранит их в памяти и будет использовать для ваших отчетов.",
+        reply_markup=get_cancel_keyboard("style")
+    )
+
+
+@router.callback_query(F.data == "style_back_to_options")
+async def cb_style_back_to_options(call: CallbackQuery):
+    user_id = call.from_user.id
+    prof = get_profile(user_id)
+    session = user_sessions.get(user_id, {})
+    custom = session.get("custom_instructions") or prof.get("last_custom_instructions", "")
+    sample_name = session.get("sample_filename", "")
+
+    if session.get("lab_text"):
+        preview_text = session["lab_text"][:280] + ("..." if len(session["lab_text"]) > 280 else "")
+        preset_info = STYLE_PRESETS.get(prof.get("active_style_preset", "standard"), STYLE_PRESETS["standard"])
+        student_str = f"{prof.get('full_name')} ({prof.get('group_name')})"
+        card_text = (
+            f"📄 **Задание к лабораторной работе:**\n\n"
+            f"👥 **Студент:** {student_str}\n"
+            f"🏛️ **Титульный лист:** МТИ (преп. {prof.get('teacher')})\n"
+            f"🎨 **Формат отчета:** {preset_info['title']}\n"
+            f"{f'💬 *Пожелания:* _{custom}_' + chr(10) if custom else ''}\n"
+            f"📖 *Фрагмент задания:*\n_{preview_text}_\n\n"
+            f"Нажмите **«Сгенерировать отчет»** для запуска:"
+        )
+        await safe_edit(call.message, card_text, reply_markup=get_options_keyboard(prof, custom, sample_name=sample_name))
+    else:
+        # Если методички еще нет, показываем профиль или главное меню
+        welcome_text = (
+            "🎓 **Главное меню**\n\n"
+            f"• 🏛️ **Титульный лист:** МТИ (зафиксирован)\n"
+            f"• 🎨 **Формат отчета:** {STYLE_PRESETS.get(prof.get('active_style_preset', 'standard'))['title']}\n\n"
+            "Отправьте **файл методички** или **фото задания**, чтобы начать сборку отчета."
+        )
+        kb = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(text="👤 Профиль и титульник", callback_data="open_profile"),
+                    InlineKeyboardButton(text="🧠 Память стиля", callback_data="open_style_menu")
+                ],
+                [
+                    InlineKeyboardButton(text="📚 Мои отчеты", callback_data="open_my_labs"),
+                    InlineKeyboardButton(text="❓ Как пользоваться", callback_data="open_help")
+                ]
+            ]
+        )
+        await safe_edit(call.message, welcome_text, reply_markup=kb)
+
+
+@router.callback_query(F.data == "open_my_labs")
+async def cb_open_my_labs(call: CallbackQuery):
+    user_id = call.from_user.id
+    labs = get_user_labs(user_id, limit=8)
+
+    if not labs:
+        await call.answer("У вас пока нет сохраненных отчетов.", show_alert=True)
+        return
+
+    text = "📚 **История ваших последних отчетов:**\n\n"
+    buttons = []
+    for idx, lab in enumerate(labs, 1):
+        created = str(lab.get("created_at", ""))[:16]
+        title = lab.get("title") or f"Лабораторная работа #{lab.get('id')}"
+        text += f"**{idx}.** {title}\n📅 _{created}_\n\n"
+        buttons.append([
+            InlineKeyboardButton(text=f"📥 Скачать #{idx}", callback_data=f"getlab_{lab.get('id')}")
+        ])
+
+    buttons.append([InlineKeyboardButton(text="🔙 Назад", callback_data="close_labs")])
+    await safe_edit(call.message, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+
+
+@router.callback_query(F.data == "open_help")
+async def cb_open_help(call: CallbackQuery):
+    text = (
+        "📖 **Инструкция по использованию бота:**\n\n"
+        "1️⃣ **Отправка задания:**\n"
+        "Прикрепите методичку (`.docx`, `.pdf`, `.txt`) или фото страниц задания прямо в чат.\n\n"
+        "2️⃣ **Память стиля и пожелания:**\n"
+        "Вы можете в любой момент написать: *«сделай так же, как предыдущую»* или "
+        "*«без введения и заключения, только вопросы и ответы»* — бот запомнит это и применит к отчету.\n\n"
+        "3️⃣ **Титульный лист:**\n"
+        "По умолчанию установлен стандарт МТИ с вашими данными. Если титульник не нужен, просто нажмите кнопку `🎓 Титульник: Выкл`.\n\n"
+        "4️⃣ **Правки:**\n"
+        "После получения отчета напишите замечания в чат (например: *«замени преподавателя»*, *«убери график»*), и бот мгновенно пересоберет документ."
+    )
+    await safe_edit(call.message, text, reply_markup=InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text="🔙 Понятно", callback_data="close_profile")]]
+    ))
+
+
 @router.callback_query(F.data == "enter_custom_text")
 async def cb_enter_custom(call: CallbackQuery):
     user_id = call.from_user.id
@@ -898,9 +1255,9 @@ async def cb_enter_custom(call: CallbackQuery):
         call.message, 
         "✍️ **Индивидуальные пожелания и образец оформления:**\n\n"
         "Вы можете:\n"
-        "• **Написать требования текстом** (например: *«сделай вариант 5»*, *«оформи без введения»*).\n"
+        "• **Написать требования текстом** (например: *«без введения и заключения, только вопросы и ответы»*, *«сделай вариант 5»*).\n"
         "• **ИЛИ отправить файл / фото образца титульника** (`.docx`, `.pdf` или фото/скриншот).\n\n"
-        "🎓 *Нейросеть изучит образец и оформит титульный лист и структуру в точности по вашему примеру!*",
+        "🎓 *Нейросеть изучит пожелания и оформит работу в точности по вашим указаниям!*",
         reply_markup=get_cancel_keyboard("options")
     )
 
@@ -912,14 +1269,31 @@ async def cb_clear_custom_text(call: CallbackQuery):
         user_sessions[user_id]["custom_instructions"] = ""
         user_sessions[user_id]["sample_filename"] = ""
         user_sessions[user_id]["waiting_input"] = None
-    await call.answer("Пожелания и образец сброшены")
+    update_profile(user_id, last_custom_instructions="", active_style_preset="standard")
+    await call.answer("Пожелания сброшены")
     prof = get_profile(user_id)
-    await safe_edit(
-        call.message,
-        "✅ **Пожелания и образец сброшены.**\n\n"
-        "Нажмите **«Сгенерировать отчет»** для запуска:",
-        reply_markup=get_options_keyboard(prof, "")
-    )
+    session = user_sessions.get(user_id, {})
+    if session.get("lab_text"):
+        preview_text = session["lab_text"][:280] + ("..." if len(session["lab_text"]) > 280 else "")
+        student_str = f"{prof.get('full_name')} ({prof.get('group_name')})"
+        card_text = (
+            f"📄 **Задание к лабораторной работе:**\n\n"
+            f"👥 **Студент:** {student_str}\n"
+            f"🏛️ **Титульный лист:** МТИ (преп. {prof.get('teacher')})\n"
+            f"🎨 **Формат отчета:** 📝 Полный ГОСТ\n\n"
+            f"📖 *Фрагмент задания:*\n_{preview_text}_\n\n"
+            f"Нажмите **«Сгенерировать отчет»** для запуска:"
+        )
+        await safe_edit(call.message, card_text, reply_markup=get_options_keyboard(prof, ""))
+    else:
+        await safe_edit(
+            call.message,
+            "✅ **Пожелания сброшены к стандартным.**\n\n"
+            "Отправьте методичку или фото задания для генерации отчета.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🧠 Настроить стиль", callback_data="open_style_menu")]
+            ])
+        )
 
 
 @router.callback_query(F.data == "start_generation")
@@ -968,13 +1342,44 @@ async def handle_text_message(message: Message):
 
         if field == "custom_instructions":
             user_sessions[user_id]["custom_instructions"] = user_text
+            inst_l = user_text.lower()
+            if any(k in inst_l for k in ["вопрос и ответ", "вопросы и ответы", "без введения", "без заключения", "только вопрос"]):
+                update_profile(user_id, active_style_preset="qa_only", last_custom_instructions=user_text)
+            elif any(k in inst_l for k in ["как прошл", "как предыдущ", "как в прошлый раз"]):
+                update_profile(user_id, active_style_preset="repeat_last", last_custom_instructions=user_text)
+            elif any(k in inst_l for k in ["только практика", "без теории"]):
+                update_profile(user_id, active_style_preset="practice_only", last_custom_instructions=user_text, omit_theory=1)
+            else:
+                update_profile(user_id, last_custom_instructions=user_text)
+
             sample_name = user_sessions[user_id].get("sample_filename", "")
+            updated_prof = get_profile(user_id)
+            preset_info = STYLE_PRESETS.get(updated_prof.get("active_style_preset", "standard"), STYLE_PRESETS["custom"])
+
             if card_msg:
-                await safe_edit(
-                    card_msg, 
-                    f"✅ **Пожелания сохранены:** _{user_text}_\n\nНажмите **«Сгенерировать отчет»** для запуска:",
-                    reply_markup=get_options_keyboard(prof, user_text, sample_name=sample_name)
+                student_str = f"{updated_prof.get('full_name')} ({updated_prof.get('group_name')})"
+                preview_text = user_sessions[user_id].get("lab_text", "")[:280]
+                card_text = (
+                    f"📄 **Параметры отчета обновлены!**\n\n"
+                    f"👥 **Студент:** {student_str}\n"
+                    f"🏛️ **Титульный лист:** МТИ (преп. {updated_prof.get('teacher')})\n"
+                    f"🎨 **Формат отчета:** {preset_info['title']}\n"
+                    f"💬 *Пожелания:* _{user_text}_\n\n"
+                    f"{f'📖 *Фрагмент методички:*' + chr(10) + f'_{preview_text}_...' + chr(10) + chr(10) if preview_text else ''}"
+                    f"Нажмите **«Сгенерировать отчет»** для запуска:"
                 )
+                await safe_edit(card_msg, card_text, reply_markup=get_options_keyboard(updated_prof, user_text, sample_name=sample_name))
+            else:
+                sent = await message.answer(
+                    f"🧠 **Пожелания сохранены в памяти:**\n_{user_text}_\n"
+                    f"🎨 **Формат:** {preset_info['title']}\n\n"
+                    "Отправьте методичку (`.docx`, `.pdf`, `.txt`) или фото задания для генерации отчета!",
+                    reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                        [InlineKeyboardButton(text="🎨 Настроить стиль", callback_data="open_style_menu")]
+                    ]),
+                    parse_mode="Markdown"
+                )
+                track_message(user_id, sent.message_id)
             return
         elif field == "custom_title_template":
             update_profile(user_id, custom_title_template=user_text)
@@ -1017,9 +1422,42 @@ async def handle_text_message(message: Message):
             return
 
     if user_id not in user_sessions or not user_sessions[user_id].get("lab_text"):
+        session = user_sessions.setdefault(user_id, {})
+        session["custom_instructions"] = user_text
+        
+        inst_l = user_text.lower()
+        if any(k in inst_l for k in ["вопрос и ответ", "вопросы и ответы", "без введения", "без заключения", "только вопрос", "просто вопрос"]):
+            update_profile(user_id, active_style_preset="qa_only", last_custom_instructions=user_text)
+        elif any(k in inst_l for k in ["как прошл", "как предыдущ", "как в прошлый раз", "такой же как", "по аналогии"]):
+            update_profile(user_id, active_style_preset="repeat_last")
+            last_lab = get_last_lab(user_id)
+            if last_lab and last_lab.get("instructions"):
+                session["custom_instructions"] = last_lab.get("instructions")
+                update_profile(user_id, last_custom_instructions=last_lab.get("instructions"))
+            else:
+                update_profile(user_id, last_custom_instructions=user_text)
+        elif any(k in inst_l for k in ["только практика", "без теории"]):
+            update_profile(user_id, active_style_preset="practice_only", last_custom_instructions=user_text, omit_theory=1)
+        else:
+            update_profile(user_id, last_custom_instructions=user_text)
+
+        updated_prof = get_profile(user_id)
+        preset_info = STYLE_PRESETS.get(updated_prof.get("active_style_preset", "standard"), STYLE_PRESETS["custom"])
+
         sent = await message.answer(
-            f"ℹ️ Вы написали: _{user_text}_\n\n"
-            "Для генерации работы сначала отправьте **файл методички** (`.pdf`, `.docx`, `.txt`) или **фото задания**."
+            f"🧠 **Пожелания сохранены в памяти бота!**\n\n"
+            f"💬 *«{user_text}»*\n"
+            f"🎨 **Формат отчета:** {preset_info['title']}\n\n"
+            "📌 **Что делать дальше:**\n"
+            "Отправьте **файл методички** (`.docx`, `.pdf`, `.txt`) или **фото задания** сюда в чат — "
+            "и отчет будет собран строго в соответствии с вашими требованиями!",
+            reply_markup=InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [InlineKeyboardButton(text="🎨 Настроить стиль", callback_data="open_style_menu")],
+                    [InlineKeyboardButton(text="🗑️ Сбросить пожелания", callback_data="clear_custom_text")]
+                ]
+            ),
+            parse_mode="Markdown"
         )
         track_message(user_id, sent.message_id)
         return
@@ -1029,8 +1467,16 @@ async def handle_text_message(message: Message):
 
     if not has_previous_code:
         session["custom_instructions"] = user_text
+        inst_l = user_text.lower()
+        if any(k in inst_l for k in ["вопрос и ответ", "без введения", "без заключения"]):
+            update_profile(user_id, active_style_preset="qa_only", last_custom_instructions=user_text)
+        elif any(k in inst_l for k in ["как прошл", "как предыдущ"]):
+            update_profile(user_id, active_style_preset="repeat_last")
+        else:
+            update_profile(user_id, last_custom_instructions=user_text)
+
         status_msg = await message.answer(
-            f"⚡ **Пожелание к отчету принято:** _{user_text}_\n\n"
+            f"⚡ **Пожелание принято:** _{user_text}_\n\n"
             "Нейросеть решает задачи и формирует структуру работы..."
         )
         track_message(user_id, status_msg.message_id)
@@ -1061,7 +1507,17 @@ async def process_generation(message: Message, status_msg: Message, user_id: int
             session["last_docx"] = docx_path
             
             disc = prof.get("discipline") or "Лабораторная работа"
-            add_lab_history(user_id, title=disc, discipline=disc, docx_path=docx_path, pdf_path=pdf_path)
+            add_lab_history(
+                user_id, 
+                title=disc, 
+                discipline=disc, 
+                docx_path=docx_path, 
+                pdf_path=pdf_path,
+                instructions=instructions,
+                style_preset=prof.get("active_style_preset", "standard")
+            )
+            if instructions:
+                update_profile(user_id, last_custom_instructions=instructions)
 
             await send_completed_file(message, status_msg, docx_path, pdf_path, chart_paths)
         else:
@@ -1091,7 +1547,17 @@ async def process_edit(message: Message, status_msg: Message, user_id: int, edit
             session["last_docx"] = docx_path
             
             disc = prof.get("discipline") or "Лабораторная работа"
-            add_lab_history(user_id, title=f"{disc} (с правками)", discipline=disc, docx_path=docx_path, pdf_path=pdf_path)
+            add_lab_history(
+                user_id, 
+                title=f"{disc} (с правками)", 
+                discipline=disc, 
+                docx_path=docx_path, 
+                pdf_path=pdf_path,
+                instructions=edit_instructions,
+                style_preset=prof.get("active_style_preset", "standard")
+            )
+            if edit_instructions:
+                update_profile(user_id, last_custom_instructions=edit_instructions)
 
             await send_completed_file(message, status_msg, docx_path, pdf_path, chart_paths, is_update=True)
         else:
@@ -1148,18 +1614,28 @@ async def send_completed_file(
 
     # 2. Отправка DOCX
     action_word = "обновлен" if is_update else "готов"
+    prof = get_profile(user_id)
+    preset_key = prof.get("active_style_preset", "standard")
+    preset_info = STYLE_PRESETS.get(preset_key, STYLE_PRESETS["standard"])
+    student_str = f"{prof.get('full_name')} ({prof.get('group_name')})"
+
     caption_docx = (
         f"✅ **Ваш отчет успешно {action_word}!**\n\n"
-        "📎 **Формат:** Microsoft Word (`.docx`)\n"
-        "📐 **Оформление:** ГОСТ (поля 30/15/20/20, Times New Roman, таблицы, формулы OMML)\n\n"
-        "💬 **Нужны правки?** Напишите замечания в чат (например: *«исправь формулу 2»*, *«убери лишнюю теорию»*) "
-        "или прикрепите образец титульника кнопкой ниже."
+        f"📎 **Формат:** Microsoft Word (`.docx`) + PDF\n"
+        f"🏛️ **Титульный лист:** МТИ ({student_str})\n"
+        f"🎨 **Стиль работы:** {preset_info['title']}\n"
+        f"📐 **Стандарт:** ГОСТ (поля 30/15/20/20, строгий черный текст, таблицы)\n\n"
+        f"💬 **Нужны правки?** Напишите замечания в чат (например: *«исправь формулу 2»*, *«убери лишнюю теорию»*) "
+        f"или воспользуйтесь кнопками ниже."
     )
     post_gen_kb = InlineKeyboardMarkup(
         inline_keyboard=[
             [
-                InlineKeyboardButton(text="📎 Прикрепить образец титульника", callback_data="post_attach_sample"),
-                InlineKeyboardButton(text="✏️ Внести правки", callback_data="post_edit_text")
+                InlineKeyboardButton(text="✏️ Внести правки текстом", callback_data="post_edit_text"),
+                InlineKeyboardButton(text="📎 Другой титульник", callback_data="post_attach_sample")
+            ],
+            [
+                InlineKeyboardButton(text="🔄 Сделать следующую в таком же стиле", callback_data="post_repeat_style")
             ],
             [
                 InlineKeyboardButton(text="🆕 Сдать другую работу", callback_data="post_new_lab")
@@ -1214,6 +1690,37 @@ async def cb_post_edit_text(call: CallbackQuery):
         "✏️ **Напишите ваши замечания и правки к отчету:**\n"
         "(например: *«замени преподавателя на Сидорова»*, *«убери лишнюю теорию»*, *«исправь формулу 2»*)",
         reply_markup=get_cancel_keyboard("edit")
+    )
+    track_message(user_id, sent.message_id)
+
+
+@router.callback_query(F.data == "post_repeat_style")
+async def cb_post_repeat_style(call: CallbackQuery):
+    user_id = call.from_user.id
+    prof = get_profile(user_id)
+    session = user_sessions.get(user_id, {})
+    current_inst = session.get("custom_instructions") or prof.get("last_custom_instructions", "")
+
+    if current_inst:
+        update_profile(user_id, last_custom_instructions=current_inst)
+    update_profile(user_id, active_style_preset="repeat_last")
+
+    user_sessions[user_id] = {
+        "lab_text": "",
+        "last_code": "",
+        "custom_instructions": current_inst,
+        "sample_filename": session.get("sample_filename", ""),
+        "waiting_input": None,
+        "session_dir": get_user_dir(user_id)
+    }
+
+    await call.answer("Стиль зафиксирован!")
+    sent = await call.message.answer(
+        "🔄 **Стиль успешно зафиксирован для следующей работы!**\n\n"
+        f"💬 *Формат:* {current_inst or 'Как в этой работе'}\n\n"
+        "Отправьте **файл новой методички** (`.docx`, `.pdf`, `.txt`) или **фото задания** — "
+        "и я сделаю следующую работу в точности так же!",
+        parse_mode="Markdown"
     )
     track_message(user_id, sent.message_id)
 

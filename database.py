@@ -24,6 +24,35 @@ DEFAULT_TITLE_TEMPLATE = """Образовательная автономная 
 Москва 2026"""
 
 
+STYLE_PRESETS = {
+    "standard": {
+        "title": "📝 Полный ГОСТ",
+        "short": "Полный ГОСТ",
+        "desc": "Титульник, введение, ход работы, таблицы, графики, заключение, вопросы."
+    },
+    "qa_only": {
+        "title": "⚡ Только вопросы и ответы",
+        "short": "Вопрос-ответ",
+        "desc": "Без введения и заключения. Строго четкие вопросы и развернутые ответы на них."
+    },
+    "practice_only": {
+        "title": "🔬 Только практика и расчеты",
+        "short": "Практика",
+        "desc": "Без теории. Сразу к практическим заданиям, формулам и вычислениям."
+    },
+    "repeat_last": {
+        "title": "🔄 Как в прошлый раз",
+        "short": "Как прошлая",
+        "desc": "Повторить стиль и требования предыдущего отчета."
+    },
+    "custom": {
+        "title": "✏️ Индивидуальный",
+        "short": "Свой стиль",
+        "desc": "Пользовательские указания к оформлению."
+    }
+}
+
+
 def init_db():
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
     with sqlite3.connect(DB_PATH) as conn:
@@ -46,6 +75,9 @@ def init_db():
                 variant TEXT DEFAULT '',
                 clean_chat_mode INTEGER DEFAULT 0,
                 custom_title_template TEXT DEFAULT '',
+                last_custom_instructions TEXT DEFAULT '',
+                active_style_preset TEXT DEFAULT 'standard',
+                last_lab_summary TEXT DEFAULT '',
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
@@ -57,6 +89,12 @@ def init_db():
             cursor.execute("ALTER TABLE user_profiles ADD COLUMN clean_chat_mode INTEGER DEFAULT 0")
         if "custom_title_template" not in cols:
             cursor.execute("ALTER TABLE user_profiles ADD COLUMN custom_title_template TEXT DEFAULT ''")
+        if "last_custom_instructions" not in cols:
+            cursor.execute("ALTER TABLE user_profiles ADD COLUMN last_custom_instructions TEXT DEFAULT ''")
+        if "active_style_preset" not in cols:
+            cursor.execute("ALTER TABLE user_profiles ADD COLUMN active_style_preset TEXT DEFAULT 'standard'")
+        if "last_lab_summary" not in cols:
+            cursor.execute("ALTER TABLE user_profiles ADD COLUMN last_lab_summary TEXT DEFAULT ''")
         
         # Таблица истории сгенерированных лабораторных работ
         cursor.execute("""
@@ -67,9 +105,19 @@ def init_db():
                 discipline TEXT,
                 docx_path TEXT,
                 pdf_path TEXT,
+                instructions TEXT DEFAULT '',
+                style_preset TEXT DEFAULT '',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
+
+        cursor.execute("PRAGMA table_info(lab_history)")
+        hist_cols = [row[1] for row in cursor.fetchall()]
+        if "instructions" not in hist_cols:
+            cursor.execute("ALTER TABLE lab_history ADD COLUMN instructions TEXT DEFAULT ''")
+        if "style_preset" not in hist_cols:
+            cursor.execute("ALTER TABLE lab_history ADD COLUMN style_preset TEXT DEFAULT ''")
+
         conn.commit()
 
 
@@ -110,6 +158,10 @@ def get_profile(user_id: int) -> Dict[str, Any]:
             data["teacher"] = "преподаватель Радонежская Нина Владиславовна"
         if not data.get("discipline"):
             data["discipline"] = "4.01 Внедрение информационных систем"
+        if not data.get("active_style_preset"):
+            data["active_style_preset"] = "standard"
+        if data.get("last_custom_instructions") is None:
+            data["last_custom_instructions"] = ""
         return data
 
 
@@ -118,7 +170,8 @@ def update_profile(user_id: int, **kwargs):
         "full_name", "group_name", "university", "teacher", 
         "discipline", "antiplagiat_mode", "include_title", 
         "include_questions", "omit_theory", "include_charts", "variant",
-        "clean_chat_mode", "custom_title_template"
+        "clean_chat_mode", "custom_title_template",
+        "last_custom_instructions", "active_style_preset", "last_lab_summary"
     ]
     updates = []
     values = []
@@ -138,14 +191,36 @@ def update_profile(user_id: int, **kwargs):
         conn.commit()
 
 
-def add_lab_history(user_id: int, title: str, discipline: str, docx_path: str, pdf_path: Optional[str] = None):
+def add_lab_history(
+    user_id: int, 
+    title: str, 
+    discipline: str, 
+    docx_path: str, 
+    pdf_path: Optional[str] = None,
+    instructions: str = "",
+    style_preset: str = ""
+):
     with sqlite3.connect(DB_PATH) as conn:
         cursor = conn.cursor()
         cursor.execute("""
-            INSERT INTO lab_history (user_id, title, discipline, docx_path, pdf_path)
-            VALUES (?, ?, ?, ?, ?)
-        """, (user_id, title, discipline, docx_path, pdf_path or ""))
+            INSERT INTO lab_history (user_id, title, discipline, docx_path, pdf_path, instructions, style_preset)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (user_id, title, discipline, docx_path, pdf_path or "", instructions, style_preset))
         conn.commit()
+
+
+def get_last_lab(user_id: int) -> Optional[Dict[str, Any]]:
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT * FROM lab_history 
+            WHERE user_id = ? 
+            ORDER BY created_at DESC 
+            LIMIT 1
+        """, (user_id,))
+        row = cursor.fetchone()
+        return dict(row) if row else None
 
 
 def get_user_labs(user_id: int, limit: int = 10) -> List[Dict[str, Any]]:
