@@ -21,7 +21,7 @@ class LLMService:
                 generation_config={
                     "temperature": 0.2,
                     "top_p": 0.95,
-                    "max_output_tokens": 4096
+                    "max_output_tokens": 8192
                 }
             )
         else:

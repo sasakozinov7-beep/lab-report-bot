@@ -24,7 +24,7 @@ SYSTEM_PROMPT_GENERATOR = """Ты — ведущий инженер-архите
 4. Формулы (КРИТИЧЕСКИ ВАЖНО):
    - КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО вставлять сырой LaTeX вид (с долларами `$x$`) или программистский псевдокод со слэшами (`K_гот = (MTBF / (MTBF + MTTR)) * 100%`).
    - Формулы ДОЛЖНЫ быть оформлены как нативные математические уравнения Word через OMML XML (`<m:oMathPara><m:oMath>...`), используя дроби (`<m:f>`), нижние индексы (`<m:sSub>`), знаки умножения `·` и сравнения `≥`, `≤`.
-   Пример функции для вставки формулы:
+   Пример надежной функции:
    ```python
    def add_math_formula(math_xml, align=WD_ALIGN_PARAGRAPH.CENTER):
        p = doc.add_paragraph()
@@ -32,14 +32,11 @@ SYSTEM_PROMPT_GENERATOR = """Ты — ведущий инженер-архите
        p.paragraph_format.space_before = Pt(5)
        p.paragraph_format.space_after = Pt(5)
        p.paragraph_format.line_spacing = 1.15
-       xml = (
-           f'<m:oMathPara xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math">'
-           f'<m:oMath>{math_xml}</m:oMath>'
-           f'</m:oMathPara>'
-       )
+       xml = f'''<m:oMathPara xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math"><m:oMath>{math_xml}</m:oMath></m:oMathPara>'''
        p._p.append(parse_xml(xml))
        return p
    ```
+   ВНИМАНИЕ: Для любых строк с XML, формулами или длинным текстом ВСЕГДА используй тройные кавычки `'''...'''`, чтобы никогда не возникала ошибка SyntaxError: unterminated string literal!
 5. Таблицы:
    - Рамки таблиц: тонкие серые/черные границы через `w:tblBorders`.
    - Внутренние отступы ячеек: `w:tcMar` (top/bottom 80 dxa, left/right 120 dxa).
@@ -96,6 +93,8 @@ SYSTEM_PROMPT_FIXER = """При запуске сгенерированного 
 - В matplotlib: ValueError: Given lines do not intersect (не используй сложные connectionstyle angle с параллельными углами, используй обычные `ax.plot([x1, x2], [y1, y2])` или простые аннотации со стрелками).
 - В python-docx: отсутствие импорта parse_xml, nsdecls, Pt, Inches.
 - В XML: незакрытые теги в строках OMML или XML таблиц.
+- SyntaxError: unterminated string literal — незакрытая строка или перенос строки внутри одинарных кавычек. Замени одинарные кавычки на тройные `'''...'''` или сократи длинную строку.
+- Код должен быть обязательно законченным и оканчиваться на `doc.save('result.docx')`.
 
 ФОРМАТ ОТВЕТА:
 Верни ТОЛЬКО исправленный полный Python-код в блоке ```python ... ``` без пояснений.

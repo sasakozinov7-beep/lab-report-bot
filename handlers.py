@@ -667,7 +667,7 @@ async def process_edit(message: Message, status_msg: Message, user_id: int, edit
         await safe_edit(status_msg, f"❌ Ошибка при внесении правок:\n`{str(e)}`")
 
 
-async def execute_with_auto_fix(code: str, user_dir: str, status_msg: Message, max_attempts: int = 2):
+async def execute_with_auto_fix(code: str, user_dir: str, status_msg: Message, max_attempts: int = 3):
     current_code = code
 
     for attempt in range(1, max_attempts + 1):
@@ -681,7 +681,7 @@ async def execute_with_auto_fix(code: str, user_dir: str, status_msg: Message, m
             return True, docx_path, pdf_path, chart_paths, None
 
         if attempt < max_attempts:
-            await safe_edit(status_msg, "🔧 Авто-исправление технической ошибки в коде...")
+            await safe_edit(status_msg, f"🔧 Авто-исправление кода (попытка {attempt+1}/{max_attempts})...")
             current_code = await llm_service.fix_broken_code(current_code, error_msg or "Unknown error")
 
     return False, None, None, [], error_msg
