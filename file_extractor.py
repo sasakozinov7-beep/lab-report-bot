@@ -12,7 +12,7 @@ def is_image_file(file_path: str) -> bool:
     ext = os.path.splitext(file_path)[1].lower()
     return ext in [".jpg", ".jpeg", ".png", ".webp", ".bmp"]
 
-async def extract_text_from_file(file_path: str, max_chars: int = 80000) -> str:
+async def extract_text_from_file(file_path: str, max_chars: int = 80000, status_callback=None) -> str:
     """Извлекает текст из файлов PDF, DOCX, MD, TXT или изображений (JPG, PNG, WEBP)."""
     ext = os.path.splitext(file_path)[1].lower()
 
@@ -20,9 +20,9 @@ async def extract_text_from_file(file_path: str, max_chars: int = 80000) -> str:
         from llm_service import llm_service
         return await llm_service.extract_text_from_image(file_path)
     elif ext == ".pdf":
-        return await _extract_from_pdf(file_path, max_chars)
+        return await _extract_from_pdf(file_path, max_chars, status_callback)
     elif ext == ".docx":
-        return await _extract_from_docx(file_path, max_chars)
+        return await _extract_from_docx(file_path, max_chars, status_callback)
     elif ext in [".txt", ".md"]:
         return _extract_from_text(file_path, max_chars)
     else:
@@ -31,7 +31,7 @@ async def extract_text_from_file(file_path: str, max_chars: int = 80000) -> str:
         except Exception:
             raise ValueError(f"Неподдерживаемый формат файла: {ext}. Поддерживаются .pdf, .docx, .md, .txt и фото (.jpg, .png)")
 
-async def _extract_from_pdf(file_path: str, max_chars: int) -> str:
+async def _extract_from_pdf(file_path: str, max_chars: int, status_callback=None) -> str:
     reader = PdfReader(file_path)
     text_parts = []
     total_len = 0
@@ -45,7 +45,7 @@ async def _extract_from_pdf(file_path: str, max_chars: int) -> str:
             text_parts.append(f"--- Страница {page_idx + 1} ---\n" + page_text)
             total_len += len(page_text)
         
-        # Проверяем наличие встроенных картинок на странице скана
+        # Проверяем наличие встроенных картинок на случай скана
         if hasattr(page, "images"):
             for img_idx, img in enumerate(page.images):
                 if len(img.data) > 5000:
@@ -60,9 +60,18 @@ async def _extract_from_pdf(file_path: str, max_chars: int) -> str:
 
     full_text = "\n\n".join(text_parts).strip()
 
-    # Если текста почти нет (сканированный PDF или фото в PDF), но есть изображения:
-    if len(full_text) < 150 and pdf_images:
-        logger.info(f"В PDF мало текста ({len(full_text)} симв.), но найдено {len(pdf_images)} изображений. Запуск Vision OCR...")
+    # Если текста достаточно (>250 симв.), возвращаем мгновенно
+    if len(full_text) >= 250:
+        return full_text
+
+    # Если текста почти нет (сканированный PDF), запускаем Vision OCR
+    if pdf_images:
+        logger.info(f"В PDF мало текста ({len(full_text)} симв.), но найдено {len(pdf_images)} сканов. Запуск Vision OCR...")
+        if status_callback:
+            try:
+                await status_callback("📸 Распознаю страницы сканированного PDF...")
+            except Exception:
+                pass
         from llm_service import llm_service
         ocr_text = await llm_service.extract_text_from_images(pdf_images[:8])
         if full_text:
@@ -72,8 +81,8 @@ async def _extract_from_pdf(file_path: str, max_chars: int) -> str:
 
     return full_text
 
-async def _extract_from_docx(file_path: str, max_chars: int) -> str:
-    # 1. Извлекаем обычные параграфы и таблицы
+async def _extract_from_docx(file_path: str, max_chars: int, status_callback=None) -> str:
+    # 1. Мгновенное извлечение обычных параграфов и таблиц
     text_parts = []
     try:
         doc = docx.Document(file_path)
@@ -90,7 +99,14 @@ async def _extract_from_docx(file_path: str, max_chars: int) -> str:
 
     text = "\n".join(text_parts).strip()
 
-    # 2. Извлекаем встроенные изображения из архива DOCX (папка word/media/)
+    # Скоростная оптимизация: если в документе уже есть нормальный текст (>250 симв.),
+    # отдаем его сразу за 0.05 сек без сканирования архива и OCR!
+    if len(text) >= 250:
+        if len(text) > max_chars:
+            text = text[:max_chars] + "\n[...Текст обрезан из-за превышения максимального объема...]"
+        return text
+
+    # 2. Если текста нет или мало (<250 симв.) — извлекаем вложенные скриншоты из word/media/
     extracted_images = []
     temp_img_dir = os.path.join(os.path.dirname(file_path), "docx_images")
     os.makedirs(temp_img_dir, exist_ok=True)
@@ -98,7 +114,6 @@ async def _extract_from_docx(file_path: str, max_chars: int) -> str:
     try:
         with zipfile.ZipFile(file_path, "r") as z:
             media_names = [n for n in z.namelist() if n.startswith("word/media/")]
-            # Числовая сортировка по номерам (image1, image2, image3...)
             def natural_sort_key(s):
                 return [int(part) if part.isdigit() else part.lower() for part in re.split(r'(\d+)', s)]
             media_names.sort(key=natural_sort_key)
@@ -107,7 +122,6 @@ async def _extract_from_docx(file_path: str, max_chars: int) -> str:
                 ext_img = os.path.splitext(name)[1].lower()
                 if ext_img in [".png", ".jpg", ".jpeg", ".webp", ".bmp"]:
                     data = z.read(name)
-                    # Фильтруем совсем мелкие иконки (< 3КБ), если картинок несколько
                     if len(data) > 3000 or len(media_names) == 1:
                         out_name = f"{os.path.basename(file_path)}_{os.path.basename(name)}"
                         out_path = os.path.join(temp_img_dir, out_name)
@@ -117,26 +131,20 @@ async def _extract_from_docx(file_path: str, max_chars: int) -> str:
     except Exception as zip_err:
         logger.warning(f"Ошибка чтения zip-структуры docx: {zip_err}")
 
-    # 3. Если текста в документе нет или очень мало (<150 симв.), но есть фото/скриншоты:
-    if len(text) < 150 and extracted_images:
-        logger.info(f"DOCX содержит мало текста ({len(text)} симв.), но обнаружено {len(extracted_images)} картинок. Запуск Vision OCR...")
+    # 3. Распознаем фото заданий через Vision OCR
+    if extracted_images:
+        logger.info(f"DOCX содержит мало текста ({len(text)} симв.), но найдено {len(extracted_images)} картинок. Запуск Vision OCR...")
+        if status_callback:
+            try:
+                await status_callback("📸 Распознаю задание со скриншотов в документе...")
+            except Exception:
+                pass
         from llm_service import llm_service
         ocr_text = await llm_service.extract_text_from_images(extracted_images)
         if text:
             text = f"{text}\n\n--- [Текст задания, распознанный с фото/скриншотов в DOCX] ---\n{ocr_text}"
         else:
             text = ocr_text
-    elif extracted_images and len(extracted_images) <= 4:
-        # Если в DOCX есть текст, но также есть до 4 картинок (схемы, таблицы вариантов, доп. условия):
-        # Дополняем текст распознанными данными с этих схем
-        try:
-            logger.info(f"DOCX содержит текст и {len(extracted_images)} схем/иллюстраций. Добавляем OCR...")
-            from llm_service import llm_service
-            ocr_text = await llm_service.extract_text_from_images(extracted_images[:4])
-            if ocr_text:
-                text = f"{text}\n\n--- [Данные с иллюстраций/схем в документе] ---\n{ocr_text}"
-        except Exception as ocr_err:
-            logger.warning(f"Не удалось распознать дополнительные картинки docx: {ocr_err}")
 
     if len(text) > max_chars:
         text = text[:max_chars] + "\n[...Текст обрезан из-за превышения максимального объема...]"

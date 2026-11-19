@@ -63,8 +63,8 @@ class LLMService:
                     img = PIL.Image.open(path)
                     if img.mode not in ("RGB", "L"):
                         img = img.convert("RGB")
-                    if max(img.size) > 1600:
-                        img.thumbnail((1600, 1600), PIL.Image.Resampling.LANCZOS)
+                    if max(img.size) > 1200:
+                        img.thumbnail((1200, 1200), PIL.Image.Resampling.BILINEAR)
                     parts.append(img)
                 except Exception as img_err:
                     logger.warning(f"Ошибка открытия изображения {path}: {img_err}")
@@ -73,15 +73,16 @@ class LLMService:
                 return ""
 
             prompt = (
-                "Ты профессиональный академический ассистент. "
-                "Перед тобой страницы методички / задания к лабораторной работе (скриншоты или фотографии страниц из документа). "
-                "Внимательно прочитай и извлеки полный текст всех заданий, числовые данные, варианты, таблицы, формулы и вопросы со всех страниц. "
-                "Верни единый структурированный текст задания на русском языке без пропусков."
+                "Ты инженер-методист. Проанализируй страницы методички/задания и составь подробное ТЗ для выполнения лабораторной работы: "
+                "тема, цель, краткие теоретические сведения, исходные числовые данные, формулы, порядок выполнения, таблицы и контрольные вопросы. "
+                "Сохрани все числовые значения, формулы и варианты без искажений."
             )
             parts.append(prompt)
 
             if self.provider == "gemini":
                 resp = await self.gemini_model.generate_content_async(parts)
+                if resp.candidates and resp.candidates[0].content and resp.candidates[0].content.parts:
+                    return "".join(p.text for p in resp.candidates[0].content.parts if hasattr(p, "text") and p.text).strip()
                 return resp.text.strip()
             else:
                 return "Изображения получены, но распознавание настроено для Gemini."
@@ -96,17 +97,18 @@ class LLMService:
             img = PIL.Image.open(image_path)
             if img.mode not in ("RGB", "L"):
                 img = img.convert("RGB")
-            # Быстрое сжатие огромных мобильных фото до оптимального разрешения для мгновенной передачи
-            if max(img.size) > 1600:
-                img.thumbnail((1600, 1600), PIL.Image.Resampling.LANCZOS)
+            # Быстрое сжатие до оптимального разрешения для мгновенной передачи
+            if max(img.size) > 1200:
+                img.thumbnail((1200, 1200), PIL.Image.Resampling.BILINEAR)
             prompt = (
-                "Ты профессиональный академический ассистент. "
-                "Внимательно прочитай и извлеки весь текст задания, формулы, таблицы, условия и вопросы "
-                "с этой фотографии методички или задания лабораторной работы. "
-                "Верни структурированный и полный текст задания на русском языке без пропусков."
+                "Ты инженер-методист. Проанализируй изображение методички/задания и составь подробное ТЗ для выполнения лабораторной работы: "
+                "тема, цель, краткие теоретические сведения, исходные числовые данные, формулы, порядок выполнения, таблицы и контрольные вопросы. "
+                "Сохрани все числовые значения, формулы и варианты без искажений."
             )
             if self.provider == "gemini":
                 resp = await self.gemini_model.generate_content_async([img, prompt])
+                if resp.candidates and resp.candidates[0].content and resp.candidates[0].content.parts:
+                    return "".join(p.text for p in resp.candidates[0].content.parts if hasattr(p, "text") and p.text).strip()
                 return resp.text.strip()
             else:
                 # Резервный вызов для OpenAI vision если используется openai

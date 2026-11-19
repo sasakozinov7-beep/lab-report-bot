@@ -375,9 +375,16 @@ async def handle_document(message: Message):
     status_msg = await message.answer(f"📥 Читаю `{filename}`...")
     track_message(user_id, status_msg.message_id)
 
+    async def update_status_callback(text_update: str):
+        await safe_edit(status_msg, text_update)
+
     try:
         await message.bot.download(doc, destination=local_file_path)
-        extracted_text = await extract_text_from_file(local_file_path, max_chars=config.MAX_PROMPT_CHARS)
+        extracted_text = await extract_text_from_file(
+            local_file_path, 
+            max_chars=config.MAX_PROMPT_CHARS,
+            status_callback=update_status_callback
+        )
 
         if not extracted_text.strip():
             await safe_edit(status_msg, "❌ Не удалось извлечь текст. Возможно, файл пустой или поврежден.")
